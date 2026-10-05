@@ -1,0 +1,11 @@
+# dsh-desktop-restart bundle patch —— 挂载 host 半。
+#
+# client 半不需要在这里登记：它经 package.json 的 dsh.client 清单被
+# client-modules 扫描发现（platform: web，./client 导出）。
+#
+# 一行，一次挂载。不要在 profile 自己的 cordis.patch.yml 里再 insert 同一个
+# id，否则 boot 会因重复的 loader entry id 失败。
+- insert:
+    - id: dsh-desktop-restart
+      name: dsh-desktop-restart
+      config: {}

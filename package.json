@@ -1,0 +1,60 @@
+{
+  "name": "dsh-desktop-restart",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 桌面版重启插件：会话标题栏按钮 / 斜杠命令 / 设置页入口，经分离的 helper 重启整个 Electron 应用（而不是只重启 dsh web 进程）。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "restart",
+    "desktop",
+    "electron"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.0-rc.1"
+  },
+  "scripts": {
+    "test": "node scripts/smoke.mjs",
+    "prepublishOnly": "npm test"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "license": "MIT",
+  "author": "luoshuizhiwei",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luoshuizhiwei/dsh-desktop-restart.git"
+  },
+  "bugs": {
+    "url": "https://github.com/luoshuizhiwei/dsh-desktop-restart/issues"
+  },
+  "homepage": "https://github.com/luoshuizhiwei/dsh-desktop-restart#readme"
+}
