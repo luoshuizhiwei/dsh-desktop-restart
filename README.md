@@ -32,19 +32,27 @@ DeepSeek Harness.exe            ← Electron 主进程：窗口、托盘、自�
 
 ## 安装
 
+### 从 npm
+
+```sh
+dsh plugin add @luoshuizhiwei/dsh-desktop-restart
+```
+
+### 从源码
+
 包放在 `~/.dsh/local-plugins/dsh-desktop-restart`，通过 profile 清单挂载：
 
 ```jsonc
 // ~/.dsh/profiles/desktop/package.json
 {
   "dependencies": {
-    "dsh-desktop-restart": "link:../../local-plugins/dsh-desktop-restart"
+    "@luoshuizhiwei/dsh-desktop-restart": "link:../../local-plugins/dsh-desktop-restart"
   },
-  "dsh": { "profile": { "bundles": [ "...", "dsh-desktop-restart" ] } }
+  "dsh": { "profile": { "bundles": [ "...", "@luoshuizhiwei/dsh-desktop-restart" ] } }
 }
 ```
 
-`desktop` profile 由 Electron 应用独占管理，`dsh plugin --profile desktop add` 会被拒绝（`profile "desktop" is managed exclusively by the Electron application`），所以这里手工声明依赖与 bundle；`node_modules` 下的对应项是一个指向源码目录的 junction。
+在较早的桌面版上，`desktop` profile 由 Electron 应用独占管理，`dsh plugin --profile desktop add` 会被拒绝（`profile "desktop" is managed exclusively by the Electron application`），此时需要手工声明依赖与 bundle；`node_modules` 下的对应项是一个指向源码目录的 junction。
 
 装好后**重启一次应用**才会加载 —— 这第一次得手动（插件还没跑起来）。
 

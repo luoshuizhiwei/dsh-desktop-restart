@@ -7,5 +7,5 @@
 # id，否则 boot 会因重复的 loader entry id 失败。
 - insert:
     - id: dsh-desktop-restart
-      name: dsh-desktop-restart
+      name: "@luoshuizhiwei/dsh-desktop-restart"
       config: {}
