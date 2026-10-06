@@ -232,22 +232,59 @@ ok('重启路由：config.enabled=false 时返回 403', () => {
 
 console.log('client half')
 
-ok('client bundle：factory id 必须等于 package.json 的包名', () => {
+/** 载入 client bundle 顶层，取回它注册的 factory 与插件导出。 */
+function loadClientBundle() {
   const loads = []
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   // 只执行 bundle 顶层。它唯一的副作用就是注册 factory —— factory 本体不会运行，
-  // 因此这里既不需要 react，也不会碰到任何真实环境。
+  // 因此这里既不需要真的 react，也不会碰到任何真实环境。
   runInNewContext(source, {
     window: { __ModuleLoader__: { load: (spec) => loads.push(spec) } },
   })
   assert.equal(loads.length, 1, 'client.js 应当恰好注册一个 factory')
   assert.equal(typeof loads[0].factory, 'function', 'factory 必须是一个函数')
+  const react = {
+    createElement: () => null,
+    useState: (initial) => [initial, () => {}],
+    useEffect: () => {},
+    useRef: () => ({ current: null }),
+  }
+  return { load: loads[0], plugin: loads[0].factory((name) => (name === 'react' ? react : undefined)) }
+}
+
+ok('client bundle：factory id 必须等于 package.json 的包名', () => {
+  const { load } = loadClientBundle()
   assert.equal(
-    loads[0].id,
+    load.id,
     packageJson.name,
     'client-modules 用解析出的包名作为浏览器模块身份：id 与包名不一致时，启动图里那一行永远不会激活，'
       + '重试会二次执行 bundle，并以 duplicate factory registration 让整个 web boot 失败'
       + '（2026-10-06 改 scoped 包名时正是这样崩的）',
+  )
+})
+
+ok('会话标题栏：必须排在后台任务条目（order 20）之前', () => {
+  const { plugin } = loadClientBundle()
+  const registered = []
+  const slots = {
+    inject: (name, fn) => { fn() },
+    register: (options) => {
+      registered.push(options)
+      return () => {}
+    },
+  }
+  plugin.apply({
+    get: (key) => (key === 'slots' ? slots : undefined),
+    effect: (fn) => fn(),
+  })
+  const header = registered.find((entry) => entry.name === 'conversation.session.header.actions')
+  assert.ok(header !== undefined, '必须注册会话标题栏条目')
+  assert.equal(typeof header.order, 'number', '标题栏条目必须显式声明 order')
+  assert.ok(
+    header.order < 20,
+    '标题栏动作组是左紧排的：排在内置 jobs 条目（order 20）之后，'
+      + '后台任务一跑起来本按钮就会被「N 个后台任务」往右顶走一截'
+      + `（2026-10-06 实测 134px）。当前 order=${String(header.order)}`,
   )
 })
 
