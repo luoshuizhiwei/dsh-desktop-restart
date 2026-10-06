@@ -14,6 +14,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runInNewContext } from 'node:vm'
+
+const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 
 const libDir = fileURLToPath(new URL('../lib/', import.meta.url))
 const helperPath = join(libDir, 'helper.cjs')
@@ -225,6 +228,33 @@ ok('重启路由：config.enabled=false 时返回 403', () => {
   disabled.get('/dsh-desktop-restart/api/restart').handler(makeReq('POST'), res)
   assert.equal(res.statusCode, 403)
   assert.match(JSON.parse(res.body).error, /enabled/u)
+})
+
+console.log('client half')
+
+ok('client bundle：factory id 必须等于 package.json 的包名', () => {
+  const loads = []
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  // 只执行 bundle 顶层。它唯一的副作用就是注册 factory —— factory 本体不会运行，
+  // 因此这里既不需要 react，也不会碰到任何真实环境。
+  runInNewContext(source, {
+    window: { __ModuleLoader__: { load: (spec) => loads.push(spec) } },
+  })
+  assert.equal(loads.length, 1, 'client.js 应当恰好注册一个 factory')
+  assert.equal(typeof loads[0].factory, 'function', 'factory 必须是一个函数')
+  assert.equal(
+    loads[0].id,
+    packageJson.name,
+    'client-modules 用解析出的包名作为浏览器模块身份：id 与包名不一致时，启动图里那一行永远不会激活，'
+      + '重试会二次执行 bundle，并以 duplicate factory registration 让整个 web boot 失败'
+      + '（2026-10-06 改 scoped 包名时正是这样崩的）',
+  )
+})
+
+ok('host bundle：cordis.patch.yml 挂载的包名等于 package.json 的包名', () => {
+  const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  const mounted = [...patch.matchAll(/^\s*name:\s*["']?([^"'\s#]+)["']?\s*$/gmu)].map((match) => match[1])
+  assert.deepEqual(mounted, [packageJson.name], 'cordis.patch.yml 里的挂载名必须与包名一致')
 })
 
 console.log('helper')
