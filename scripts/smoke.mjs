@@ -23,8 +23,8 @@ const helperPath = join(libDir, 'helper.cjs')
 
 let passed = 0
 /** 跑一个断言块并计数。 */
-function ok(name, fn) {
-  fn()
+async function ok(name, fn) {
+  await fn()
   passed += 1
   console.log('  ok   ' + name)
 }
@@ -98,120 +98,140 @@ hostHalf.apply(ctx, {})
 const statusRoute = routes.get('/dsh-desktop-restart/api/status')
 const restartRoute = routes.get('/dsh-desktop-restart/api/restart')
 
-ok('注册了状态与重启两条路由', () => {
+await ok('注册了状态与重启两条路由', async () => {
   assert.ok(statusRoute, '缺少状态路由')
   assert.ok(restartRoute, '缺少重启路由')
   assert.equal(routes.size, 2)
 })
 
-ok('host 半声明 webServer 依赖', () => {
+await ok('host 半声明 webServer 依赖', async () => {
   assert.deepEqual(hostHalf.inject, ['webServer'])
 })
 
-ok('斜杠命令：注册了 /restart-desktop', () => {
+await ok('斜杠命令：注册了 /restart-desktop', async () => {
   assert.equal(commands.length, 1, '应当恰好注册一个命令')
   assert.equal(commands[0].name, 'restart-desktop')
   assert.ok(commands[0].description.length > 0, '描述不能为空')
   assert.equal(typeof commands[0].handler, 'function')
 })
 
-ok('斜杠命令：非桌面宿主下返回 error 结果', () => {
-  const result = commands[0].handler({})
+await ok('斜杠命令：非桌面宿主下返回 error 结果', async () => {
+  const result = await commands[0].handler({})
   assert.equal(result.kind, 'error')
   assert.match(result.text, /桌面版/u)
 })
 
-ok('斜杠命令：命令名符合 DSH 的命名规则', () => {
+await ok('斜杠命令：命令名符合 DSH 的命名规则', async () => {
   assert.match(commands[0].name, /^[a-z][a-z0-9_-]*$/u)
 })
 
-ok('状态路由：GET 返回 desktop=false（当前不是桌面宿主）', () => {
+await ok('状态路由：GET 返回 desktop=false（当前不是桌面宿主）', async () => {
   const res = makeRes()
-  statusRoute.handler(makeReq('GET'), res)
+  await statusRoute.handler(makeReq('GET'), res)
   assert.equal(res.statusCode, 200)
   const body = JSON.parse(res.body)
   assert.equal(body.desktop, false)
   assert.equal(body.enabled, true)
-  assert.equal(body.hostPid, process.pid)
 })
 
-ok('状态路由：非 GET 返回 405', () => {
+await ok('状态路由：不再泄露 pid 与可执行文件路径', async () => {
   const res = makeRes()
-  statusRoute.handler(makeReq('POST'), res)
+  await statusRoute.handler(makeReq('GET'), res)
+  const body = JSON.parse(res.body)
+  assert.equal('hostPid' in body, false)
+  assert.equal('mainPid' in body, false)
+  assert.equal('exe' in body, false)
+})
+
+await ok('状态路由：非 loopback 来源返回 403', async () => {
+  const res = makeRes()
+  await statusRoute.handler(makeReq('GET', { remoteAddress: '10.1.2.3' }), res)
+  assert.equal(res.statusCode, 403)
+})
+
+await ok('状态路由：Origin 与 Host 不一致返回 403', async () => {
+  const res = makeRes()
+  await statusRoute.handler(makeReq('GET', { origin: 'http://evil.example' }), res)
+  assert.equal(res.statusCode, 403)
+})
+
+await ok('状态路由：非 GET 返回 405', async () => {
+  const res = makeRes()
+  await statusRoute.handler(makeReq('POST'), res)
   assert.equal(res.statusCode, 405)
 })
 
-ok('重启路由：非 POST 返回 405', () => {
+await ok('重启路由：非 POST 返回 405', async () => {
   const res = makeRes()
-  restartRoute.handler(makeReq('GET'), res)
+  await restartRoute.handler(makeReq('GET'), res)
   assert.equal(res.statusCode, 405)
   assert.equal(res.headers.allow, 'POST')
 })
 
-ok('重启路由：非 loopback 来源返回 403', () => {
+await ok('重启路由：非 loopback 来源返回 403', async () => {
   const res = makeRes()
-  restartRoute.handler(makeReq('POST', { remoteAddress: '10.1.2.3' }), res)
+  await restartRoute.handler(makeReq('POST', { remoteAddress: '10.1.2.3' }), res)
   assert.equal(res.statusCode, 403)
 })
 
-ok('重启路由：带 Origin 时以 Origin 为准（回环对端仍是硬前提）', () => {
+await ok('重启路由：带 Origin 时以 Origin 为准（回环对端仍是硬前提）', async () => {
   const res = makeRes()
-  restartRoute.handler(makeReq('POST', { headers: { 'x-forwarded-for': '203.0.113.9' } }), res)
+  await restartRoute.handler(makeReq('POST', { headers: { 'x-forwarded-for': '203.0.113.9' } }), res)
   assert.equal(res.statusCode, 409)
 })
 
-ok('重启路由：Origin 与 Host 不一致返回 403', () => {
+await ok('重启路由：Origin 与 Host 不一致返回 403', async () => {
   const res = makeRes()
-  restartRoute.handler(makeReq('POST', { origin: 'http://evil.example' }), res)
+  await restartRoute.handler(makeReq('POST', { origin: 'http://evil.example' }), res)
   assert.equal(res.statusCode, 403)
 })
 
-ok('重启路由：桌面壳转发的无 Origin 请求被放行（走到非桌面判定）', () => {
+await ok('重启路由：桌面壳转发的无 Origin 请求被放行（走到非桌面判定）', async () => {
   const res = makeRes()
   const req = makeReq('POST')
   delete req.headers.origin
-  restartRoute.handler(req, res)
+  await restartRoute.handler(req, res)
   assert.equal(res.statusCode, 409)
 })
 
-ok('重启路由：无 Origin 且带转发头返回 403', () => {
+await ok('重启路由：无 Origin 且带转发头返回 403', async () => {
   const res = makeRes()
   const req = makeReq('POST', { headers: { 'x-forwarded-for': '203.0.113.9' } })
   delete req.headers.origin
-  restartRoute.handler(req, res)
+  await restartRoute.handler(req, res)
   assert.equal(res.statusCode, 403)
 })
 
-ok('重启路由：无 Origin 且 Sec-Fetch-Site 为 cross-site 返回 403', () => {
+await ok('重启路由：无 Origin 且 Sec-Fetch-Site 为 cross-site 返回 403', async () => {
   const res = makeRes()
   const req = makeReq('POST', { headers: { 'sec-fetch-site': 'cross-site' } })
   delete req.headers.origin
-  restartRoute.handler(req, res)
+  await restartRoute.handler(req, res)
   assert.equal(res.statusCode, 403)
 })
 
-ok('重启路由：无 Origin 且 Host 非回环返回 403', () => {
+await ok('重启路由：无 Origin 且 Host 非回环返回 403', async () => {
   const res = makeRes()
   const req = makeReq('POST', { host: 'example.com' })
   delete req.headers.origin
-  restartRoute.handler(req, res)
+  await restartRoute.handler(req, res)
   assert.equal(res.statusCode, 403)
 })
 
-ok('重启路由：Origin 的 host 与 Host 一致时被放行', () => {
+await ok('重启路由：Origin 的 host 与 Host 一致时被放行', async () => {
   const res = makeRes()
-  restartRoute.handler(makeReq('POST', { origin: 'http://localhost:19387', host: 'localhost:19387' }), res)
+  await restartRoute.handler(makeReq('POST', { origin: 'http://localhost:19387', host: 'localhost:19387' }), res)
   assert.equal(res.statusCode, 409)
 })
 
-ok('重启路由：可信但非桌面宿主返回 409 并说明原因', () => {
+await ok('重启路由：可信但非桌面宿主返回 409 并说明原因', async () => {
   const res = makeRes()
-  restartRoute.handler(makeReq('POST'), res)
+  await restartRoute.handler(makeReq('POST'), res)
   assert.equal(res.statusCode, 409)
   assert.match(JSON.parse(res.body).error, /桌面版/u)
 })
 
-ok('重启路由：config.enabled=false 时返回 403', () => {
+await ok('重启路由：config.enabled=false 时返回 403', async () => {
   const disabled = new Map()
   const disabledCtx = {
     ...ctx,
@@ -225,7 +245,7 @@ ok('重启路由：config.enabled=false 时返回 403', () => {
   }
   hostHalf.apply(disabledCtx, { enabled: false })
   const res = makeRes()
-  disabled.get('/dsh-desktop-restart/api/restart').handler(makeReq('POST'), res)
+  await disabled.get('/dsh-desktop-restart/api/restart').handler(makeReq('POST'), res)
   assert.equal(res.statusCode, 403)
   assert.match(JSON.parse(res.body).error, /enabled/u)
 })
@@ -252,7 +272,7 @@ function loadClientBundle() {
   return { load: loads[0], plugin: loads[0].factory((name) => (name === 'react' ? react : undefined)) }
 }
 
-ok('client bundle：factory id 必须等于 package.json 的包名', () => {
+await ok('client bundle：factory id 必须等于 package.json 的包名', async () => {
   const { load } = loadClientBundle()
   assert.equal(
     load.id,
@@ -263,7 +283,7 @@ ok('client bundle：factory id 必须等于 package.json 的包名', () => {
   )
 })
 
-ok('会话标题栏：必须排在后台任务条目（order 20）之前', () => {
+await ok('会话标题栏：必须排在后台任务条目（order 20）之前', async () => {
   const { plugin } = loadClientBundle()
   const registered = []
   const slots = {
@@ -288,7 +308,7 @@ ok('会话标题栏：必须排在后台任务条目（order 20）之前', () =>
   )
 })
 
-ok('host bundle：cordis.patch.yml 挂载的包名等于 package.json 的包名', () => {
+await ok('host bundle：cordis.patch.yml 挂载的包名等于 package.json 的包名', async () => {
   const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   const mounted = [...patch.matchAll(/^\s*name:\s*["']?([^"'\s#]+)["']?\s*$/gmu)].map((match) => match[1])
   assert.deepEqual(mounted, [packageJson.name], 'cordis.patch.yml 里的挂载名必须与包名一致')
@@ -296,17 +316,17 @@ ok('host bundle：cordis.patch.yml 挂载的包名等于 package.json 的包名'
 
 console.log('helper')
 
-ok('helper：缺参数时以退出码 1 结束', () => {
+await ok('helper：缺参数时以退出码 1 结束', async () => {
   const result = spawnSync(process.execPath, [helperPath], { encoding: 'utf8' })
   assert.equal(result.status, 1)
 })
 
-ok('helper：handoff 文件不存在时以退出码 1 结束', () => {
+await ok('helper：handoff 文件不存在时以退出码 1 结束', async () => {
   const result = spawnSync(process.execPath, [helperPath, join(tmpdir(), 'dsh-desktop-restart-missing.json')], { encoding: 'utf8' })
   assert.equal(result.status, 1)
 })
 
-ok('helper：目标映像名不符时拒绝，且不启动任何进程', () => {
+await ok('helper：目标映像名不符时拒绝，且不启动任何进程', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-desktop-restart-smoke-'))
   const logPath = join(dir, 'helper.log')
   const handoffPath = join(dir, 'handoff.json')
