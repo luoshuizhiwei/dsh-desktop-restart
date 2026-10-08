@@ -348,5 +348,29 @@ await ok('helper：目标映像名不符时拒绝，且不启动任何进程', a
   assert.doesNotMatch(log, /relaunched/u, 'helper 不应启动任何进程')
 })
 
+await ok('helper：新实例立刻退出时会如实记录，不谎报成功', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-desktop-restart-relaunch-'))
+  const logPath = join(dir, 'helper.log')
+  const handoffPath = join(dir, 'handoff.json')
+  writeFileSync(handoffPath, JSON.stringify({
+    // 不存在的 pid：helper 查不到映像名，于是跳过 kill，直接走到拉起那一步。
+    mainPid: 999999999,
+    // where.exe 不带参数会立即退出，正好模拟「拉起来了但没活下来」。
+    exe: 'C:\\Windows\\System32\\where.exe',
+    hostPid: 1,
+    port: 0,
+    logPath,
+    delayMs: 50,
+  }), 'utf8')
+
+  const result = spawnSync(process.execPath, [helperPath, handoffPath], { encoding: 'utf8' })
+  assert.equal(result.status, 0)
+
+  const log = readFileSync(logPath, 'utf8')
+  assert.match(log, /relaunched/u, '应当记录已拉起')
+  assert.match(log, /already gone/u, '应当识别出新实例已经退出')
+  assert.doesNotMatch(log, /restart complete/u, '不应谎报重启完成')
+})
+
 console.log('')
 console.log('all ' + String(passed) + ' checks passed')
