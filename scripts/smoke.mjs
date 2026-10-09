@@ -3,22 +3,29 @@
  *
  * 刻意不重启任何东西：
  * - 宿主半用桩上下文加载，只验证路由的守卫与拒绝路径；
- * - helper 只走「映像名不匹配」与「拉起来又立刻退出」两条路径，绝不会真的
- *   走到 taskkill 一个真应用，也不弹任何窗口（测试把 alertOnFailure 关掉）；
+ * - helper 只走「映像名不匹配」「拉起来又立刻退出」「端口迟迟不放」三条路径；
+ *   最后那条用**测试自己拉起的替身进程**当 host、用**测试自己占住的端口**当被占端口，
+ *   绝不 taskkill 一个真应用，也不弹任何窗口（测试把 alertOnFailure 关掉）；
  * - 守卫的判据（任务快照、安装记录、路径过滤、命令行解析）是纯函数，直接
  *   单测，不依赖本机当前有没有活在跑。
+ *
+ * 测试自己建的临时目录一律走 `scratch()` 登记、退出时统一删掉：它自己造的东西
+ * 自己收走，不在系统 Temp 里留垃圾（2026-10-09 之前每跑一次就留 5 个空目录）。
  *
  * 运行：node scripts/smoke.mjs
  */
 
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
+
+import { MIN_ORPHAN_AGE_MS, SNAPSHOT_PREFIX, orphanSnapshots, sweepOrphanSnapshots } from '../lib/sweep.js'
 
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 
@@ -35,6 +42,40 @@ async function ok(name, fn) {
   passed += 1
   console.log('  ok   ' + name)
 }
+
+/**
+ * 本次测试建过的临时目录。
+ *
+ * 以前这里每跑一次就往系统 Temp 里留 5 个空目录、从不回收：2026-10-09 的
+ * C 盘体检在 Temp 里数出 167 个 `dsh-desktop-restart-*`。测试自己造的东西
+ * 测试自己收走，所以统一走 {@link scratch} 建、退出时统一删。
+ */
+const scratchDirs = []
+
+/**
+ * 建一个本次测试专用的临时目录，并登记进收尾清理清单。
+ * @param {string} label - 用途标签（进目录名，便于出事时认人）。
+ * @returns {string} 目录绝对路径。
+ */
+function scratch(label) {
+  const dir = mkdtempSync(join(tmpdir(), `dsh-desktop-restart-${label}-`))
+  scratchDirs.push(dir)
+  return dir
+}
+
+/** 收尾：删掉本次测试建过的全部临时目录（可重复调用）。 */
+function cleanScratch() {
+  for (const dir of scratchDirs.splice(0)) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      /* 删不掉也别影响退出码：这只是打扫 */
+    }
+  }
+}
+
+// 断言失败会直接抛出、走不到文件末尾，所以清理挂在退出钩子上而不是只写一行收尾代码。
+process.on('exit', cleanScratch)
 
 /** 一个最小可用的 node:http 响应桩。 */
 function makeRes() {
@@ -100,17 +141,26 @@ const ctx = {
   },
 }
 
+// 宿主半在**模块加载时**读 DSH_HOME 来决定状态目录（日志、交接、设置文件）在哪，
+// 所以必须在 import 之前指到本次测试的临时目录 —— 否则测试会往用户真实的
+// ~/.dsh/desktop-restart 里写设置。
+process.env.DSH_HOME = scratch('dsh-home')
+
 const hostHalf = await import(new URL('../lib/index.js', import.meta.url).href)
-hostHalf.apply(ctx, {})
+// sweep: false —— 测试绝不碰真实的系统 Temp：这个开关开着时，宿主半会在启动后
+// 异步去删「判定为孤儿」的快照目录，而测试进程并不是那个拥有会话的宿主。
+hostHalf.apply(ctx, { sweep: false })
 
 const statusRoute = routes.get('/dsh-desktop-restart/api/status')
 const restartRoute = routes.get('/dsh-desktop-restart/api/restart')
+const sweepRoute = routes.get('/dsh-desktop-restart/api/sweep')
 const { __test } = hostHalf
 
-await ok('注册了状态与重启两条路由', async () => {
+await ok('注册了状态、重启与清理设置三条路由', async () => {
   assert.ok(statusRoute, '缺少状态路由')
   assert.ok(restartRoute, '缺少重启路由')
-  assert.equal(routes.size, 2)
+  assert.ok(routes.get('/dsh-desktop-restart/api/sweep'), '缺少清理设置路由')
+  assert.equal(routes.size, 3)
 })
 
 await ok('host 半声明 webServer 依赖', async () => {
@@ -349,7 +399,7 @@ await ok('守卫：闲置的智能体与已结束的任务不算', async () => {
 })
 
 await ok('守卫：安装记录存在即视为「正在写 profile」', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-desktop-restart-install-'))
+  const dir = scratch('install')
   assert.equal(__test.installInProgress(dir).active, false)
   assert.equal(__test.installInProgress(dir).known, true)
 
@@ -361,7 +411,7 @@ await ok('守卫：安装记录存在即视为「正在写 profile」', async ()
 })
 
 await ok('守卫：安装记录损坏时按「有」处理（宁可多问一次）', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-desktop-restart-broken-'))
+  const dir = scratch('broken')
   mkdirSync(join(dir, '.plugin-manager'), { recursive: true })
   writeFileSync(join(dir, '.plugin-manager', 'run.json'), '{not json', 'utf8')
   const state = __test.installInProgress(dir)
@@ -374,7 +424,7 @@ await ok('守卫：目录定位不到时静默跳过（known=false）', async ()
 })
 
 await ok('守卫：profile 目录必须同时有 package.json 与 node_modules', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-desktop-restart-profile-'))
+  const dir = scratch('profile')
   assert.equal(__test.validProfileDir(dir), null, '空目录不算 profile')
   writeFileSync(join(dir, 'package.json'), '{}', 'utf8')
   assert.equal(__test.validProfileDir(dir), null, '只有 package.json 也不算')
@@ -391,7 +441,7 @@ await ok('守卫：把会打断什么写成一句人话', async () => {
   )
   assert.equal(reasons.length, 2)
   assert.match(reasons[0], /有任务在跑/u)
-  assert.match(reasons[0], /2 个回合/u)
+  assert.match(reasons[0], /2 项正在生成或运行工具/u)
   assert.match(reasons[0], /3 个后台任务/u)
   assert.match(reasons[1], /正在安装或更新/u)
 
@@ -411,7 +461,7 @@ await ok('守卫：只有 force=1 才算「已确认」', async () => {
 })
 
 await ok('守卫：交接目录只保留最近 20 组（handoff + log 一起清）', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-desktop-restart-prune-'))
+  const dir = scratch('prune')
   for (let index = 0; index < 25; index += 1) {
     const stamp = `2026-10-${String(index + 1).padStart(2, '0')}T00-00-00`
     writeFileSync(join(dir, `handoff-${stamp}.json`), '{}', 'utf8')
@@ -427,17 +477,187 @@ await ok('守卫：交接目录只保留最近 20 组（handoff + log 一起清�
   assert.ok(names.includes('unrelated.txt'), '不认识的文件不动')
 })
 
+console.log('sweep')
+
+await ok('清理：只挑「启动前就存在、启动后没被写过、且躺够最小年龄」的快照目录', async () => {
+  const started = 1_000_000_000
+  const day = 24 * 60 * 60 * 1000
+  const now = started + 1000
+  /** 造一个目录项。 */
+  const entry = (name, createdAtMs, modifiedAtMs, isDir = true) => ({
+    name, createdAtMs, modifiedAtMs, isDirectory: () => isDir,
+  })
+  const picked = orphanSnapshots([
+    entry(`${SNAPSHOT_PREFIX}orphan`, started - 3 * day, started - 3 * day),
+    entry(`${SNAPSHOT_PREFIX}young`, started - 1000, started - 1000),
+    entry(`${SNAPSHOT_PREFIX}live`, started + 500, started + 500),
+    entry(`${SNAPSHOT_PREFIX}writing`, started - 3 * day, started + 500),
+    entry('not-a-snapshot', started - 3 * day, started - 3 * day),
+    entry(`${SNAPSHOT_PREFIX}afile`, started - 3 * day, started - 3 * day, false),
+    entry(`${SNAPSHOT_PREFIX}nan`, Number.NaN, started - 3 * day),
+  ], started, { now, minAgeMs: day })
+  assert.deepEqual(picked, [`${SNAPSHOT_PREFIX}orphan`])
+})
+
+await ok('清理：最小年龄默认是 24 小时', async () => {
+  assert.equal(MIN_ORPHAN_AGE_MS, 24 * 60 * 60 * 1000)
+})
+
+await ok('清理：真删目录，前缀不对的、不是目录的都不动', async () => {
+  const root = scratch('sweep')
+  const doomed = join(root, `${SNAPSHOT_PREFIX}doomed`)
+  const unrelated = join(root, 'unrelated')
+  const asFile = join(root, `${SNAPSHOT_PREFIX}afile`)
+  for (const dir of [doomed, unrelated]) {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'payload.bin'), Buffer.alloc(2048))
+  }
+  writeFileSync(asFile, 'x')
+  // 把「启动时刻」放到未来、最小年龄放开：两条守卫本身在上面单独验，
+  // 这里要验的是「真的会去删、而且只删该删的」。
+  const result = await sweepOrphanSnapshots({
+    tempRoot: root,
+    startedAtMs: Date.now() + 60_000,
+    minAgeMs: 0,
+    log: () => {},
+  })
+  assert.deepEqual(result.removed, [`${SNAPSHOT_PREFIX}doomed`])
+  assert.equal(result.failed.length, 0)
+  assert.equal(result.bytes, 2048, '应当统计出释放的字节数')
+  assert.equal(result.files, 1)
+  assert.equal(existsSync(doomed), false, '该删的必须删掉')
+  assert.equal(existsSync(unrelated), true, '不是快照前缀的目录一个都不该碰')
+  assert.equal(existsSync(asFile), true, '同前缀的文件不动')
+})
+
+await ok('清理：本次启动之后才建的目录一个都不碰', async () => {
+  const root = scratch('sweep-live')
+  const fresh = join(root, `${SNAPSHOT_PREFIX}fresh`)
+  mkdirSync(fresh, { recursive: true })
+  writeFileSync(join(fresh, 'payload.bin'), Buffer.alloc(512))
+  const result = await sweepOrphanSnapshots({
+    tempRoot: root,
+    // 启动时刻在过去 → 刚建的目录「晚于启动」，必须被排除。
+    startedAtMs: Date.now() - 60_000,
+    minAgeMs: 0,
+    log: () => {},
+  })
+  assert.deepEqual(result.removed, [], '活动会话的目录绝不能被删')
+  assert.equal(existsSync(fresh), true)
+})
+
+await ok('清理：临时目录不存在时静默返回空结果', async () => {
+  const result = await sweepOrphanSnapshots({
+    tempRoot: join(tmpdir(), 'dsh-desktop-restart-does-not-exist-xyz'),
+    startedAtMs: Date.now(),
+    log: () => {},
+  })
+  assert.deepEqual(result.removed, [])
+  assert.equal(result.scanned, 0)
+})
+
+await ok('插件设置：写进去读得回来，坏文件退回默认', async () => {
+  const dir = scratch('settings')
+  const file = join(dir, 'settings.json')
+  assert.deepEqual(__test.readSettings(file), {}, '文件不存在时回空对象')
+  assert.deepEqual(__test.writeSettings({ sweep: false }, file), { sweep: false })
+  assert.deepEqual(__test.readSettings(file), { sweep: false })
+  assert.deepEqual(__test.writeSettings({ other: 1 }, file), { sweep: false, other: 1 }, '合并写，不丢别的字段')
+  writeFileSync(file, '{ 这不是 JSON')
+  assert.deepEqual(__test.readSettings(file), {}, '内容坏了回空对象')
+})
+
+await ok('清理：设置文件里没有这一项时，默认值来自 config', async () => {
+  // 先把设置文件清掉，模拟「用户没改过」。
+  rmSync(join(String(process.env.DSH_HOME), 'desktop-restart', 'settings.json'), { force: true })
+  const probeRoutes = new Map()
+  hostHalf.apply({
+    effect: (fn) => { fn() },
+    webServer: { port: 19387, register: (spec) => { probeRoutes.set(spec.path, spec); return () => {} } },
+    logger: () => ({ info() {}, warn() {}, error() {} }),
+    inject: () => {},
+  }, { sweep: false, command: false })
+  const res = makeRes()
+  probeRoutes.get('/dsh-desktop-restart/api/status').handler(makeReq('GET'), res)
+  assert.equal(JSON.parse(res.body).sweep.enabled, false, 'config.sweep=false 且用户没改过 → 关闭')
+})
+
+await ok('清理设置路由：非 POST 返回 405', async () => {
+  const res = makeRes()
+  await sweepRoute.handler(makeReq('GET'), res)
+  assert.equal(res.statusCode, 405)
+  assert.equal(res.headers.allow, 'POST')
+})
+await ok('清理设置路由：非 loopback 来源返回 403', async () => {
+  const res = makeRes()
+  await sweepRoute.handler(makeReq('POST', { remoteAddress: '10.0.0.5' }), res)
+  assert.equal(res.statusCode, 403)
+})
+
+await ok('清理设置路由：run / enabled 都走通，且只动传进来的 Temp', async () => {
+  // 把 TMP/TEMP 指向本次测试的目录：宿主半跑清理时读的是 tmpdir()，
+  // 否则这条用例会去扫真实的系统 Temp。
+  const fakeTemp = scratch('sweeptemp')
+  const fresh = join(fakeTemp, `${SNAPSHOT_PREFIX}fresh`)
+  mkdirSync(fresh, { recursive: true })
+  writeFileSync(join(fresh, 'x.bin'), Buffer.alloc(1024))
+  const savedTmp = process.env.TMP
+  const savedTemp = process.env.TEMP
+  process.env.TMP = fakeTemp
+  process.env.TEMP = fakeTemp
+  try {
+    const run = makeRes()
+    await sweepRoute.handler(makeReq('POST', { url: '/dsh-desktop-restart/api/sweep?run=1' }), run)
+    const afterRun = JSON.parse(run.body)
+    assert.equal(afterRun.ok, true)
+    assert.equal(afterRun.last.removed, 0, '刚建的目录不该被删')
+    assert.equal(existsSync(fresh), true)
+
+    const off = makeRes()
+    await sweepRoute.handler(makeReq('POST', { url: '/dsh-desktop-restart/api/sweep?enabled=0' }), off)
+    assert.equal(JSON.parse(off.body).enabled, false)
+    assert.equal(__test.readSettings().sweep, false, '开关要写进插件的设置文件')
+
+    const on = makeRes()
+    await sweepRoute.handler(makeReq('POST', { url: '/dsh-desktop-restart/api/sweep?enabled=1' }), on)
+    const afterOn = JSON.parse(on.body)
+    assert.equal(afterOn.enabled, true)
+    assert.equal(__test.readSettings().sweep, true)
+    assert.equal(existsSync(fresh), true, '打开开关顺手清一次，也不该碰新目录')
+  } finally {
+    if (savedTmp === undefined) delete process.env.TMP
+    else process.env.TMP = savedTmp
+    if (savedTemp === undefined) delete process.env.TEMP
+    else process.env.TEMP = savedTemp
+  }
+})
+
+await ok('状态路由：带上清理开关与上次结果', async () => {
+  __test.writeSettings({ sweep: true })
+  const res = makeRes()
+  statusRoute.handler(makeReq('GET'), res)
+  const body = JSON.parse(res.body)
+  assert.equal(typeof body.sweep, 'object')
+  assert.equal(body.sweep.enabled, true, '设置文件里开着就是开着')
+  assert.equal(body.sweep.minAgeHours, 24, '界面要能说出「躺够 24 小时」这个数')
+  __test.writeSettings({ sweep: false })
+  const off = makeRes()
+  statusRoute.handler(makeReq('GET'), off)
+  assert.equal(JSON.parse(off.body).sweep.enabled, false, '设置文件里关着就是关着')
+})
+
 console.log('client half')
 
 /** 载入 client bundle 顶层，取回它注册的 factory 与插件导出。 */
-function loadClientBundle() {
+function loadClientBundle(options = {}) {
   const loads = []
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   // 只执行 bundle 顶层。它唯一的副作用就是注册 factory —— factory 本体不会运行，
   // 因此这里既不需要真的 react，也不会碰到任何真实环境。
-  runInNewContext(source, {
-    window: { __ModuleLoader__: { load: (spec) => loads.push(spec) } },
-  })
+  const windowObject = { __ModuleLoader__: { load: (spec) => loads.push(spec) } }
+  // 需要测「本机保存的开关」时，把假的 localStorage 塞进这个 vm 的 window。
+  if (options.storage !== undefined) windowObject.localStorage = options.storage
+  runInNewContext(source, { window: windowObject })
   assert.equal(loads.length, 1, 'client.js 应当恰好注册一个 factory')
   assert.equal(typeof loads[0].factory, 'function', 'factory 必须是一个函数')
   const react = {
@@ -467,6 +687,87 @@ await ok('client bundle：确认态与警告态是两条不同的路（force 只
   assert.match(source, /result\.guard === true/u, '必须识别宿主半的守卫响应')
 })
 
+await ok('client bundle：自己注入样式，且重复加载不重复插入', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  assert.match(source, /typeof document !== "undefined"/u, '没有 document 的环境（测试 / SSR）不能炸')
+  assert.match(source, /querySelector\("style\[data-plugin-css=/u, '重复加载时不能重复插入同一个 style')
+  assert.match(source, /\.dshdr-/u, '选择器必须自带前缀，不能影响别的插件')
+})
+
+await ok('client bundle：标题栏按钮照抄官方座位里的真实按钮（ui-jobs JobListAction）', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  // 数值逐字取自 packages/client/ui-jobs/src/client/JobListAction.module.css 的 .trigger
+  // —— 它就是会话标题栏 conversation.session.header.actions 座位里的真实按钮。
+  for (const token of [
+    'min-height:28px',
+    'padding:3px 2px',
+    'gap:3px',
+    '--dsw-radius-sm',
+    'line-height:18px',
+    '--dsw-alias-label-tertiary',
+    '@container (width<=540px)',
+  ]) {
+    assert.ok(source.includes(token), `缺少与官方标题栏动作一致的 ${token}`)
+  }
+  assert.match(
+    source,
+    /\.dshdr-trigger:hover:not\(:disabled\),\.dshdr-trigger:focus-visible\{color:var\(--dsw-alias-label-secondary/u,
+    '官方 hover / focus 只把字色提到 label-secondary，不加任何底色',
+  )
+})
+
+await ok('client bundle：忙碌时有旋转动画，并尊重系统的减少动效', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  assert.match(source, /@keyframes dshdr-spin/u)
+  assert.match(source, /data-busy=1/u)
+  assert.match(source, /prefers-reduced-motion:reduce/u)
+})
+
+await ok('client bundle：状态色用官方 token 名（warn，不是 warning）', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  assert.match(source, /data-phase=warn\]\{color:var\(--dsw-alias-state-warn-primary/u, '会打断工作用官方的 warn 色')
+  assert.match(source, /data-phase=error\]\{color:var\(--dsw-alias-state-error-primary/u, '失败才是红色')
+  assert.match(source, /data-phase=confirm\]\{color:var\(--dsw-alias-label-primary/u, '普通确认只做中性强调')
+  assert.ok(!source.includes('--dsw-alias-state-warning-primary'), '官方没有 state-warning-primary 这个 token')
+  assert.ok(!source.includes('--dsw-alias-interactive-bg-hover-warning'), '这个 token 也不存在，别自造')
+  assert.match(source, /:active:not\(:disabled\)\{background:var\(--dsw-alias-interactive-bg-active/u, '按下态用官方 active token')
+  assert.match(source, /var\(--dsw-focus-ring-width/u, '焦点环用官方 token')
+})
+
+await ok('client bundle：状态变化对读屏可见（aria-live / aria-label / aria-busy）', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  assert.match(source, /"aria-live": "polite"/u)
+  assert.match(source, /"aria-label": ariaLabelOf\(action\)/u)
+  assert.match(source, /"aria-busy"/u)
+})
+
+await ok('client bundle：图标优先用官方 IconRefreshOutlineRegular，兜底也是 16 格描边', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  assert.match(source, /UI\.IconRefreshOutlineRegular/u, '官方图标集里有现成的刷新图标，优先用它')
+  assert.match(source, /viewBox: "0 0 16 16"/u, '兜底图标按官方约定画在 16 格里')
+  assert.match(source, /stroke: "currentColor"/u, '图标要跟文字颜色走')
+  assert.match(source, /fill: "none"/u, '描边图标必须 fill:none，否则会填成实心')
+  assert.doesNotMatch(source, /"⟳"/u, '不该再用字体符号当图标（字体缺字时会出现方框）')
+})
+
+await ok('client bundle：直接用官方组件，且取不到时有兜底', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  assert.match(source, /require\("@deepseek-ai\/dsh-client-ui-primitives"\)/u, '要 require 官方组件库本体')
+  assert.match(source, /catch \{[\s\S]{0,40}?UI = null/u, 'require 必须在 try/catch 里：官方改名也不能把插件带崩')
+  assert.match(source, /UI\.Button/u, '设置页按钮用官方 Button')
+  assert.match(source, /UI\.RiskConfirmation/u, '风险确认用官方 RiskConfirmation')
+  assert.match(source, /variant: "ghost"/u, '官方 Button 的变体')
+  assert.match(source, /acknowledged: action\.modal\.acknowledged/u, 'RiskConfirmation 是受控的：勾选状态由调用方持有')
+  assert.match(source, /onAcknowledgedChange/u, '勾选回调用官方约定的名字')
+  assert.match(source, /data-variant": "ghost"/u, '兜底按钮也照抄官方 ghost 变体')
+})
+
+await ok('package.json：client.inject 声明了官方组件库', async () => {
+  const inject = packageJson.dsh.client.inject
+  assert.ok(inject.includes('@deepseek-ai/dsh-client-ui-primitives'), '必须在 inject 里声明，加载器才会先注册它')
+  assert.ok(inject.includes('@deepseek-ai/dsh-client-ui-conversation'), '标题栏座位来自这个包')
+})
+
 await ok('会话标题栏：必须排在后台任务条目（order 20）之前', async () => {
   const { plugin } = loadClientBundle()
   const registered = []
@@ -492,6 +793,153 @@ await ok('会话标题栏：必须排在后台任务条目（order 20）之前',
   )
 })
 
+await ok('左上角：注册进官方面板座位（同任务看板），行交给侧栏绘制', async () => {
+  const { plugin } = loadClientBundle()
+  const registered = []
+  const slots = {
+    inject: (name, fn) => { fn() },
+    register: (options) => {
+      registered.push(options)
+      return () => {}
+    },
+  }
+  plugin.apply({
+    get: (key) => (key === 'slots' ? slots : undefined),
+    effect: (fn) => fn(),
+  })
+  const panel = registered.find((entry) => entry.name === 'sidebar.panellist')
+  assert.ok(panel !== undefined, '必须注册到左上角的面板座位')
+  assert.equal(panel.id, 'dsh-desktop-restart')
+  assert.equal(typeof panel.order, 'number', '官方行按 order 排序')
+  assert.equal(typeof panel.label, 'function', '官方行用 label 画文字（任务看板传的也是函数）')
+  const main = registered.find((entry) => entry.name === 'main')
+  assert.ok(main !== undefined, '必须注册主区面板，否则点开是空的')
+  assert.equal(main.key, 'dsh-desktop-restart', 'main 是按 key 配对的面板')
+
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  assert.match(source, /function PanelGlyph/u, '这个座位只提供图标组件')
+  assert.match(source, /variant: "primary"/u, '面板里的按钮用官方 Button 的 primary 变体')
+})
+
+await ok('插件开关：宿主 config 里的入口开关（缺省 true）', async () => {
+  assert.deepEqual(__test.readEntries({}), { panel: true, footer: true, header: true, command: true, settingsRow: true })
+  const off = __test.readEntries({ footer: false, command: false })
+  assert.equal(off.footer, false)
+  assert.equal(off.command, false)
+  assert.equal(off.panel, true, '没写的按 true')
+})
+
+await ok('插件开关：状态接口把默认开关给客户端', async () => {
+  const res = makeRes()
+  await statusRoute.handler(makeReq('GET'), res)
+  const body = JSON.parse(res.body)
+  assert.ok(body.entries && typeof body.entries === 'object', '状态里要有 entries')
+  assert.equal(body.entries.footer, true)
+  assert.equal(typeof body.entries.header, 'boolean')
+})
+
+await ok('插件开关：本机保存的选择能真的关掉入口（并保留开关页）', async () => {
+  const store = new Map([['dsh-desktop-restart.entries', JSON.stringify({ footer: false })]])
+  const storage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => store.set(key, String(value)),
+    removeItem: (key) => store.delete(key),
+  }
+  const { plugin } = loadClientBundle({ storage })
+  const registered = []
+  const slots = {
+    inject: (name, fn) => {
+      fn()
+      return () => {}
+    },
+    register: (options) => {
+      registered.push(options)
+      return () => {}
+    },
+  }
+  plugin.apply({
+    get: (key) => (key === 'slots' ? slots : undefined),
+    effect: (fn) => fn(),
+  })
+  const names = registered.map((entry) => entry.name)
+  assert.ok(!names.includes('sidebar.footer.action'), '本地关掉的入口不该再注册')
+  assert.ok(names.includes('sidebar.panellist'), '没关的照旧注册')
+  assert.ok(names.includes('conversation.session.header.actions'))
+  assert.ok(names.includes('settings.general.item'))
+  assert.ok(names.includes('settings.section'), '开关页本身必须一直在，否则关掉就回不来了')
+})
+
+await ok('插件开关：清理那一行读写的宿主设置，不是浏览器本地', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  assert.match(source, /function SweepRow/u, '设置页要有这一行')
+  assert.match(source, /SWEEP_ROUTE/u, '必须打宿主路由，不能只在本地记一下')
+  assert.match(source, /\?enabled=1/u, '打开开关要通知宿主')
+  assert.match(source, /\?enabled=0/u, '关掉开关也要通知宿主')
+  assert.match(source, /\?run=1/u, '「立即清理」要能单独触发一次')
+  assert.match(source, /sweep: body\.sweep/u, '开关状态必须来自宿主的状态接口（不许客户端自己编默认值）')
+  assert.match(source, /躺够 24 小时/u, '界面要说清只清理什么样的目录')
+})
+
+await ok('左侧边栏：注册进官方座位 sidebar.footer.action，照官方 42px 动作行', async () => {
+  const { plugin } = loadClientBundle()
+  const registered = []
+  const slots = {
+    inject: (name, fn) => { fn() },
+    register: (options) => {
+      registered.push(options)
+      return () => {}
+    },
+  }
+  plugin.apply({
+    get: (key) => (key === 'slots' ? slots : undefined),
+    effect: (fn) => fn(),
+  })
+  const footer = registered.find((entry) => entry.name === 'sidebar.footer.action')
+  assert.ok(footer !== undefined, '必须注册到官方给第三方留的侧栏座位')
+  assert.equal(footer.id, 'dsh-desktop-restart')
+  assert.equal(footer.order, 100, '官方示例用的 order 是 100')
+  assert.ok(typeof footer.label === 'string' && footer.label.length > 0, '官方示例带 label')
+
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  // 数值逐字取自**同一个座位里另外两个占用者**（它们完全一致）：官方插件面板
+  // CordisPanel.module.css 与第三方 dsh-diff-approval 的 PendingPanel.module.css。
+  // 上一轮曾改成「侧栏设置行」（另一个座位）的数值，反而偏离了同座位的邻居。
+  for (const token of [
+    'height:42px',
+    'border-radius:12px',
+    'gap:8px',
+    'padding:0 10px 0 8px',
+    'font-size:14px',
+    'line-height:22px',
+    'width:calc(100% + 4px)',
+    'margin:4px -2px',
+  ]) {
+    assert.ok(source.includes(token), `缺少与同座位占用者一致的 ${token}`)
+  }
+  assert.match(
+    source,
+    /\.dshdr-foot-badge:hover:not\(:disabled\)\{background:var\(--dsw-alias-interactive-bg-hover/u,
+    '官方 hover 是加 interactive-bg-hover 底色',
+  )
+  assert.match(
+    source,
+    /\.dshdr-foot\[data-rail=1\]\{width:36px;height:36px;margin:8px 0 10px\}/u,
+    '收起成 rail 时官方是 36×36、margin 8px 0 10px',
+  )
+  assert.match(
+    source,
+    /\.dshdr-foot\[data-rail=1\] \.dshdr-foot-badge\{border-radius:50%;justify-content:center;gap:0;width:36px;height:36px;padding:0\}/u,
+    '收起成 rail 时官方是圆形',
+  )
+  // 同座位里 dsh-diff-approval 的条目也是整行宽 + flex:none；容器不允许换行时，
+  // 后注册的那个会被挤出容器、只露出一角（2026-10-09 实测）。
+  assert.match(
+    source,
+    /\[class\*=\\"footerActions\\"\]:has\(\.dshdr-foot\)\{flex-wrap:wrap !important\}/u,
+    '同座位多个整行条目时，容器必须允许换行，且只命中装着本插件这一行的容器',
+  )
+})
+
 await ok('host bundle：cordis.patch.yml 挂载的包名等于 package.json 的包名', async () => {
   const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   const mounted = [...patch.matchAll(/^\s*name:\s*["']?([^"'\s#]+)["']?\s*$/gmu)].map((match) => match[1])
@@ -511,7 +959,7 @@ await ok('helper：handoff 文件不存在时以退出码 1 结束', async () =>
 })
 
 await ok('helper：目标映像名不符时拒绝，且不启动任何进程', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-desktop-restart-smoke-'))
+  const dir = scratch('smoke')
   const logPath = join(dir, 'helper.log')
   const handoffPath = join(dir, 'handoff.json')
   writeFileSync(handoffPath, JSON.stringify({
@@ -533,7 +981,7 @@ await ok('helper：目标映像名不符时拒绝，且不启动任何进程', a
 })
 
 await ok('helper：新实例立刻退出时会重试，试完如实认输且不谎报成功', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-desktop-restart-relaunch-'))
+  const dir = scratch('relaunch')
   const logPath = join(dir, 'helper.log')
   const handoffPath = join(dir, 'handoff.json')
   writeFileSync(handoffPath, JSON.stringify({
@@ -588,7 +1036,7 @@ await ok('helper：把主进程的启动参数原样带回（引号与空格）'
   assert.equal(helper.relaunchArgsFrom(undefined, exe), null)
 })
 
-await ok('helper：兜底强杀只认同一个可执行文件', async () => {
+await ok('helper：兜底清理只认同一个可执行文件，且跳过 host / 主进程 / 自己', async () => {
   const exe = 'C:\\Program Files\\DSH\\DeepSeek Harness.exe'
   const processes = [
     { pid: 10, path: exe },
@@ -598,9 +1046,108 @@ await ok('helper：兜底强杀只认同一个可执行文件', async () => {
     { pid: 0, path: exe },
     { pid: 'x', path: exe },
   ]
-  assert.deepEqual(helper.ownProcessPids(processes, exe), [10, 11])
-  assert.deepEqual(helper.ownProcessPids([], exe), [])
-  assert.deepEqual(helper.ownProcessPids(null, exe), [])
+  assert.deepEqual(helper.leftoverPids(processes, exe), [10, 11])
+  // host 与主进程、helper 自己用的是同一个可执行文件：它们必须由调用方显式排除，
+  // 否则 host 会被当成「残留进程」顺手结束 —— 那正是「不带 /T」要避免的事。
+  assert.deepEqual(helper.leftoverPids(processes, exe, [10]), [11], 'skip 里的 pid 不参与清理')
+  assert.deepEqual(helper.leftoverPids(processes, exe, [10, 11]), [], '全被排除时没有候选')
+  assert.deepEqual(helper.leftoverPids([], exe), [])
+  assert.deepEqual(helper.leftoverPids(null, exe), [])
+})
+
+await ok('helper：端口迟迟不放时先清残留，最后才单独结束 host', async () => {
+  // 占住一个端口，模拟「主进程已经没了，host 还攥着监听不放」。
+  const server = net.createServer()
+  await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+  const port = server.address().port
+
+  // 替身 host：一个真的进程，等 helper 来结束它。
+  const decoy = spawn(process.execPath, ['-e', 'setTimeout(function () {}, 60000)'], {
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  /** 进程是否还在。 */
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  try {
+    const dir = scratch('host')
+    const logPath = join(dir, 'helper.log')
+    const handoffPath = join(dir, 'handoff.json')
+    writeFileSync(handoffPath, JSON.stringify({
+      // 已经不在的主进程：helper 查不到映像名，于是跳过 kill。
+      mainPid: 999999999,
+      exe: 'C:\\Windows\\System32\\where.exe',
+      hostPid: decoy.pid,
+      port,
+      logPath,
+      delayMs: 50,
+      relaunchAttempts: 1,
+      relaunchVerifyMs: 100,
+      // 三个等待上限在这里缩短，免得这条用例真的等满 30 秒。
+      mainExitTimeoutMs: 200,
+      portFreeTimeoutMs: 200,
+      portRelistenTimeoutMs: 200,
+      alertOnFailure: false,
+    }), 'utf8')
+
+    const result = spawnSync(process.execPath, [helperPath, handoffPath], { encoding: 'utf8' })
+    assert.equal(result.status, 0)
+
+    const log = readFileSync(logPath, 'utf8')
+    assert.match(log, /port \d+ is still held/u, '应当识别出端口还被占着')
+    assert.match(log, /still holds port/u, '应当识别出攥着端口的正是 host')
+    assert.match(log, /as a last resort/u, '应当写明这是最后手段、代价是什么')
+    assert.doesNotMatch(
+      log,
+      new RegExp(`killing leftover pid ${String(decoy.pid)}\\b`, 'u'),
+      'host 不该混在残留进程里被顺手带走',
+    )
+
+    await new Promise((resolve) => { setTimeout(resolve, 300) })
+    assert.equal(alive(decoy.pid), false, '最后一道必须真的结束 host')
+  } finally {
+    if (alive(decoy.pid)) decoy.kill()
+    server.close()
+  }
+})
+
+await ok('helper：问不出进程表时不当成「主进程已经没了」', async () => {
+  // 把 PATH 指到一个空目录：tasklist / taskkill / powershell 全都调不到，
+  // 正好模拟「进程表读不出来」。helper 必须照样结束主进程，而不是以为它已经没了。
+  const emptyPath = scratch('nopath')
+  const dir = scratch('blind')
+  const logPath = join(dir, 'helper.log')
+  const handoffPath = join(dir, 'handoff.json')
+  writeFileSync(handoffPath, JSON.stringify({
+    // 不存在的 pid：正常路径下 helper 会查到「映像名 null」，据此跳过 kill。
+    mainPid: 999999999,
+    exe: 'C:\\Windows\\System32\\where.exe',
+    hostPid: 1,
+    port: 0,
+    logPath,
+    delayMs: 50,
+    relaunchAttempts: 1,
+    relaunchVerifyMs: 100,
+    alertOnFailure: false,
+  }), 'utf8')
+
+  const result = spawnSync(process.execPath, [helperPath, handoffPath], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: emptyPath, Path: emptyPath },
+  })
+  assert.equal(result.status, 0)
+
+  const log = readFileSync(logPath, 'utf8')
+  assert.match(log, /could not read the process table/u, '读不到进程表时必须如实说明')
+  assert.match(log, /without an image-name check/u, '读不到时仍然要结束主进程')
+  assert.doesNotMatch(log, /is already gone; skipping the kill/u, '「问不出来」不能被当成「已经没了」')
 })
 
 await ok('helper：命令行分词在引号内保留空格', async () => {
