@@ -940,6 +940,17 @@ await ok('左侧边栏：注册进官方座位 sidebar.footer.action，照官方
   )
 })
 
+await ok('插件开关：手动清理必须留下看得见的回执', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  // 2026-10-10 实测：清理结果通常是「扫描 N 个、删掉 0 个」，两次一模一样时界面
+  // 毫无变化，用户以为按钮坏了（其实点击成功）。所以手动清理必须写一句带时间戳的回执。
+  assert.match(source, /刚刚清理过/u, '手动清理后必须写一句回执')
+  assert.match(source, /const clockOf/u, '回执要带时间戳，让「又跑了一次」看得见')
+  assert.match(source, /describe\(last\)/u, '提示文字统一走 describe（含时间戳）')
+  assert.match(source, /call\("\?run=1", true\)/u, '「立即清理」要标成手动触发')
+  assert.match(source, /const toggle = /u, '开关的拨动处理要单独一处，别把形状假设写死在 JSX 里')
+})
+
 await ok('host bundle：cordis.patch.yml 挂载的包名等于 package.json 的包名', async () => {
   const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   const mounted = [...patch.matchAll(/^\s*name:\s*["']?([^"'\s#]+)["']?\s*$/gmu)].map((match) => match[1])
