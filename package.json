@@ -1,7 +1,7 @@
 {
   "name": "@luoshuizhiwei/dsh-desktop-restart",
-  "version": "0.2.0",
-  "description": "DeepSeek Harness 桌面版重启插件：会话标题栏按钮 / 斜杠命令 / 设置页入口，经分离的 helper 重启整个 Electron 应用（而不是只重启 dsh web 进程）。",
+  "version": "0.3.0",
+  "description": "DeepSeek Harness 桌面版重启插件：侧栏面板 / 侧栏底部 / 会话标题栏 / 斜杠命令 / 设置页五个入口，经分离的 helper 重启整个 Electron 应用（而不是只重启 dsh web 进程）；并顺手清掉 DSH 漏在系统 Temp 里的改动快照。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -24,6 +24,7 @@
   "files": [
     "lib",
     "scripts",
+    "docs",
     "cordis.patch.yml",
     "README.md"
   ],
