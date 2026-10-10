@@ -951,6 +951,115 @@ await ok('插件开关：手动清理必须留下看得见的回执', async () =
   assert.match(source, /const toggle = /u, '开关的拨动处理要单独一处，别把形状假设写死在 JSX 里')
 })
 
+await ok('插件开关：清理结果要显眼 —— 独立一行、按结果上色、跑起来转圈', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  // 2026-10-10 第二轮实测：上一轮只是把回执写成 12px 的 hint（`.dshdr-set-hint`），
+  // 读完仍然觉得「好像没发生什么」。结果因此独立成行、按结果上色，忙碌时转圈。
+  assert.match(source, /className: "dshdr-set-result"/u, '结果必须有自己的那一行，不再借 hint 的位置')
+  assert.match(
+    source,
+    /\.dshdr-set-result\[data-tone=ok\]\{color:var\(--dsw-alias-state-success-primary/u,
+    '成功用官方成功色',
+  )
+  assert.match(
+    source,
+    /\.dshdr-set-result\[data-tone=warn\]\{color:var\(--dsw-alias-state-warn-primary/u,
+    '有目录没删掉是警告色，不能谎报成功',
+  )
+  assert.match(
+    source,
+    /\.dshdr-set-result\[data-tone=error\]\{color:var\(--dsw-alias-state-error-primary/u,
+    '失败用官方错误色',
+  )
+  assert.match(source, /const toneOf = /u, '颜色要有唯一一处判定，别散落在各处')
+  assert.match(
+    source,
+    /\.dshdr-spin\{display:inline-flex;transform-origin:center;animation:dshdr-spin/u,
+    '忙碌时图标要转起来（官方 Button 不接受 data-busy，所以用可复用的类）',
+  )
+  assert.match(
+    source,
+    /prefers-reduced-motion:reduce\)\{[^}]*\.dshdr-spin\{animation:none\}/u,
+    '系统开了「减少动效」时必须停转',
+  )
+})
+
+await ok('顺手收拾界面：默认按文字藏掉账号菜单里的「意见反馈」，且不碰别的行', async () => {
+  const loads = []
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  /** 一个只够本插件用的假菜单项。 */
+  const makeItem = (text) => ({
+    nodeType: 1,
+    role: 'menuitem',
+    textContent: text,
+    parentElement: null,
+    style: {},
+    attrs: {},
+    matches: (selector) => selector === 'button[role="menuitem"]',
+    querySelectorAll: () => [],
+    setAttribute(key, value) { this.attrs[key] = value },
+    removeAttribute(key) { delete this.attrs[key] },
+  })
+  const contact = makeItem('意见反馈')
+  const settings = makeItem('设置')
+  const observerState = { observed: false }
+  class FakeMutationObserver {
+    observe() { observerState.observed = true }
+    disconnect() {}
+  }
+  runInNewContext(source, {
+    window: {
+      __ModuleLoader__: { load: (spec) => loads.push(spec) },
+      localStorage: { getItem: () => null, setItem: () => {} },
+    },
+    document: {
+      body: {
+        nodeType: 1,
+        textContent: '',
+        matches: () => false,
+        querySelectorAll: (selector) => (selector === 'button[role="menuitem"]' ? [settings, contact] : []),
+      },
+      // 本插件还会在这次调用里注入一次自己的样式（真实浏览器里是 <style>）——
+      // 假 DOM 得让这条路径也走得通，否则测不到下面的行为。
+      querySelector: () => null,
+      createElement: () => ({ dataset: {} }),
+      head: { appendChild: () => {} },
+      querySelectorAll: () => [],
+    },
+    MutationObserver: FakeMutationObserver,
+  })
+  const react = {
+    createElement: () => null,
+    useState: (initial) => [initial, () => {}],
+    useEffect: () => {},
+    useRef: () => ({ current: null }),
+  }
+  const plugin = loads[0].factory((name) => (name === 'react' ? react : undefined))
+  const slots = { inject: (name, fn) => { fn() }, register: () => () => {} }
+  plugin.apply({ get: (key) => (key === 'slots' ? slots : undefined), effect: (fn) => fn() })
+  assert.equal(contact.style.display, 'none', '默认就该把「意见反馈」藏起来')
+  assert.equal(contact.attrs['data-dshdr-hidden'], '1', '要留标记，关掉开关时才恢复得回来')
+  assert.equal(settings.style.display, undefined, '「设置」那一项：一个字节都不许动')
+  assert.equal(observerState.observed, true, '要盯着以后挂上来的菜单（它是点开才渲染的）')
+  assert.equal(
+    loads[0].factory.length,
+    1,
+    'factory 仍然只接受 require 一个参数',
+  )
+})
+
+await ok('顺手收拾界面：开关存在本机、关掉能原样恢复，认不出文字就不动手', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  assert.match(source, /const CONTACT_LABELS = \["意见反馈", "Feedback"\]/u, '认人只用这两种文字')
+  assert.match(source, /button\[role=\\"menuitem\\"\]/u, '内置账号菜单给的就是这个形状，没有 id / data 可认')
+  assert.match(source, /new MutationObserver/u, '菜单是点开才挂 DOM 的，不能只在启动时扫一次')
+  assert.match(source, /node\.removeAttribute\(HIDER_ATTR\)/u, '关掉开关要把标记摘掉')
+  assert.match(source, /node\.style\.display = ""/u, '关掉开关要把被藏的元素放开')
+  assert.match(source, /HIDE_CONTACT_STORE_KEY/u, '开关存本机即可（这是纯客户端行为）')
+  assert.match(source, /raw === null \? true : raw !== "0"/u, '没存过时默认隐藏')
+  assert.match(source, /CONTACT_LABELS\.indexOf\(text\) < 0/u, '认不出就跳过，绝不误伤别的菜单项')
+})
+
 await ok('host bundle：cordis.patch.yml 挂载的包名等于 package.json 的包名', async () => {
   const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   const mounted = [...patch.matchAll(/^\s*name:\s*["']?([^"'\s#]+)["']?\s*$/gmu)].map((match) => match[1])
