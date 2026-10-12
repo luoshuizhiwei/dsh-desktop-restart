@@ -398,29 +398,82 @@ await ok('守卫：闲置的智能体与已结束的任务不算', async () => {
   assert.equal(snapshot.active, false)
 })
 
-await ok('守卫：安装记录存在即视为「正在写 profile」', async () => {
+await ok('守卫：没有安装记录时不拦', async () => {
   const dir = scratch('install')
-  assert.equal(__test.installInProgress(dir).active, false)
-  assert.equal(__test.installInProgress(dir).known, true)
-
-  mkdirSync(join(dir, '.plugin-manager'), { recursive: true })
-  writeFileSync(join(dir, '.plugin-manager', 'run.json'), JSON.stringify({ pid: 4321 }), 'utf8')
-  const busy = __test.installInProgress(dir)
-  assert.equal(busy.active, true)
-  assert.equal(busy.pid, 4321)
+  const state = __test.installInProgress(dir)
+  assert.equal(state.known, true)
+  assert.equal(state.active, false)
+  assert.equal(state.blocked, false)
 })
 
-await ok('守卫：安装记录损坏时按「有」处理（宁可多问一次）', async () => {
+await ok('守卫：记录里的进程还活着 = 正在安装（硬拦）', async () => {
+  const dir = scratch('install-live')
+  mkdirSync(join(dir, '.plugin-manager'), { recursive: true })
+  writeFileSync(
+    join(dir, '.plugin-manager', 'run.json'),
+    JSON.stringify({ pid: process.pid, grouped: false }),
+    'utf8',
+  )
+  const busy = __test.installInProgress(dir)
+  assert.equal(busy.active, true)
+  assert.equal(busy.running, true)
+  assert.equal(busy.blocked, true, '进程还活着时必须硬拦：腰斩 pnpm 会把依赖树弄成半新半旧')
+  assert.equal(busy.pid, process.pid)
+})
+
+await ok('守卫：记录里的进程已经退出 = 崩溃残留（不拦，避免 2026-10-06 那类死锁）', async () => {
+  const dir = scratch('install-stale')
+  mkdirSync(join(dir, '.plugin-manager'), { recursive: true })
+  // 真起一个进程再让它退出：拿到的 pid 一定「曾经存在、现在不存在」，
+  // 比猜一个大概率空闲的 pid 稳。
+  const gone = spawnSync(process.execPath, ['-e', ''], { stdio: 'ignore' })
+  assert.ok(Number.isInteger(gone.pid), '取不到临时进程的 pid，这条用例无效')
+  writeFileSync(
+    join(dir, '.plugin-manager', 'run.json'),
+    JSON.stringify({ pid: gone.pid, grouped: false }),
+    'utf8',
+  )
+  const state = __test.installInProgress(dir)
+  assert.equal(state.active, false, '残留记录不该把重启按钮锁住')
+  assert.equal(state.blocked, false)
+  assert.equal(state.pid, gone.pid, '残留也要如实报出记录里的 pid，便于诊断')
+})
+
+await ok('守卫：存活判据照抄上游（process.kill(pid, 0) 不抛就算活着）', async () => {
+  assert.equal(__test.runAlive({ pid: process.pid }), true)
+  assert.equal(__test.runAlive({ pid: process.pid, grouped: true }), true, 'Windows 上 grouped 不改探测目标')
+  assert.equal(__test.runAlive({ pid: null }), false)
+  assert.equal(__test.runAlive({ pid: 0 }), false)
+  assert.equal(__test.runAlive({ pid: -5 }), false)
+  assert.equal(__test.runAlive({ pid: 1073741824 }), false, '不存在的 pid 必须判成「已经没了」')
+  assert.equal(__test.runAlive(undefined), false, '记录形状意外时不能抛')
+})
+
+await ok('守卫：安装记录损坏时只警告、不硬拦（判不了就多问一次）', async () => {
   const dir = scratch('broken')
   mkdirSync(join(dir, '.plugin-manager'), { recursive: true })
   writeFileSync(join(dir, '.plugin-manager', 'run.json'), '{not json', 'utf8')
   const state = __test.installInProgress(dir)
   assert.equal(state.active, true)
+  assert.equal(state.blocked, false, '读不出进程号时不能硬拦')
+  assert.equal(state.running, false)
   assert.equal(state.pid, null)
 })
 
 await ok('守卫：目录定位不到时静默跳过（known=false）', async () => {
-  assert.deepEqual(__test.installInProgress(null), { known: false, active: false, pid: null, record: null })
+  const state = __test.installInProgress(null)
+  assert.equal(state.known, false)
+  assert.equal(state.active, false)
+  assert.equal(state.blocked, false)
+})
+
+await ok('守卫：安装中的硬拦排在 force 之前（force=1 也绕不过去）', async () => {
+  const source = readFileSync(join(libDir, 'index.js'), 'utf8')
+  const blockedAt = source.indexOf('if (installing.blocked)')
+  const forceAt = source.indexOf('if (options.force !== true)')
+  assert.ok(blockedAt > 0, '必须有「插件正在安装/更新」的硬拦分支')
+  assert.ok(forceAt > 0, '应当保留 force 守卫')
+  assert.ok(blockedAt < forceAt, '硬拦必须排在 force 守卫之前，否则 ?force=1 会绕过它')
 })
 
 await ok('守卫：profile 目录必须同时有 package.json 与 node_modules', async () => {
@@ -437,7 +490,7 @@ await ok('守卫：profile 目录必须同时有 package.json 与 node_modules',
 await ok('守卫：把会打断什么写成一句人话', async () => {
   const reasons = __test.guardReasons(
     { known: true, active: true, turns: 2, queued: 1, jobs: 3, sessions: 2 },
-    { known: true, active: true, pid: 99, record: 'x' },
+    { known: true, active: true, blocked: true, running: true, pid: 99, record: 'x' },
   )
   assert.equal(reasons.length, 2)
   assert.match(reasons[0], /有任务在跑/u)
@@ -447,9 +500,19 @@ await ok('守卫：把会打断什么写成一句人话', async () => {
 
   const clean = __test.guardReasons(
     { known: true, active: false, turns: 0, queued: 0, jobs: 0, sessions: 1 },
-    { known: true, active: false, pid: null, record: null },
+    { known: true, active: false, blocked: false, running: false, pid: null, record: null },
   )
   assert.deepEqual(clean, [])
+})
+
+await ok('守卫：判不了是否在装时只说「读不出进程」，不宣称正在安装', async () => {
+  const reasons = __test.guardReasons(
+    { known: true, active: false, turns: 0, queued: 0, jobs: 0, sessions: 0 },
+    { known: true, active: true, blocked: false, running: false, pid: null, record: 'x' },
+  )
+  assert.equal(reasons.length, 1)
+  assert.match(reasons[0], /读不出是哪个进程/u)
+  assert.doesNotMatch(reasons[0], /正在安装或更新/u, '判不了就不能说成「正在装」')
 })
 
 await ok('守卫：只有 force=1 才算「已确认」', async () => {
@@ -685,6 +748,16 @@ await ok('client bundle：确认态与警告态是两条不同的路（force 只
   assert.match(source, /\?force=1/u, '强制重启必须带 ?force=1')
   assert.match(source, /WARN_ARM_MS/u, '警告态必须有防连点冷却')
   assert.match(source, /result\.guard === true/u, '必须识别宿主半的守卫响应')
+})
+
+await ok('client bundle：安装中的硬拦不弹「仍要重启」，也不说「仍可重启」', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  const blockedAt = source.indexOf('result.blocked === true')
+  const guardAt = source.indexOf('result.guard === true')
+  assert.ok(blockedAt > 0, '必须识别宿主半的硬拦响应')
+  assert.ok(blockedAt < guardAt, '硬拦要排在守卫确认之前，否则会弹一个勾选了也没用的确认框')
+  assert.match(source, /guardSuffix/u, '守卫提示的出路必须按 blocked 分开写')
+  assert.match(source, /装完之前不能重启/u, '硬拦时必须说清「装完之前不能重启」')
 })
 
 await ok('client bundle：自己注入样式，且重复加载不重复插入', async () => {
