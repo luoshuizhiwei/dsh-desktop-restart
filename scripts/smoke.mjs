@@ -540,6 +540,164 @@ await ok('守卫：交接目录只保留最近 20 组（handoff + log 一起清�
   assert.ok(names.includes('unrelated.txt'), '不认识的文件不动')
 })
 
+await ok('守卫：先写后裁 —— 连写 25 组仍稳定在 20 组（0.3.4 修的那一位差）', async () => {
+  // 复刻真实顺序：先写这一轮的 handoff + log，然后才裁剪。原先在写之前裁，
+  // 于是刚写下的那一组没被计入名额，实测 handoff 21 / log 21 而不是 20。
+  const dir = scratch('prune-seq')
+  for (let index = 0; index < 25; index += 1) {
+    const stamp = `2026-10-${String(index + 1).padStart(2, '0')}T00-00-00`
+    writeFileSync(join(dir, `handoff-${stamp}.json`), '{}', 'utf8')
+    writeFileSync(join(dir, `restart-${stamp}.log`), '', 'utf8')
+    __test.pruneState(dir)
+  }
+  const names = readdirSync(dir)
+  assert.equal(names.filter((name) => name.startsWith('handoff-')).length, 20, '连写 25 组后应当正好 20 组')
+  assert.equal(names.filter((name) => name.startsWith('restart-')).length, 20)
+  assert.ok(names.includes('handoff-2026-10-25T00-00-00.json'), '刚写下的那一组必须留下')
+  assert.ok(!names.includes('handoff-2026-10-01T00-00-00.json'), '最旧的必须被挤掉')
+})
+
+console.log('platform auth')
+
+/**
+ * 造一个带 connection 服务的宿主上下文，把这次 apply 注册的路由收进自己的 Map。
+ *
+ * 不污染顶层那个 `routes`：顶层上下文里没有 connection 服务，走的正是
+ * 「退回自检」那条分支，其余用例依赖它保持这个形状。
+ * @param {unknown} connection - 假的 connection 服务。
+ * @param {object} [config] - 传给 apply 的 config。
+ * @returns {Map<string, object>} 路径 → 路由。
+ */
+function ctxWithConnection(connection, config) {
+  const own = new Map()
+  hostHalf.apply({
+    ...ctx,
+    get: (name) => (name === 'connection' ? connection : undefined),
+    webServer: {
+      port: 19387,
+      register: (spec) => {
+        own.set(spec.path, spec)
+        return () => own.delete(spec.path)
+      },
+    },
+  }, { sweep: false, ...config })
+  return own
+}
+
+await ok('平台门：没有 connection 服务时退回自检（不拦、不报错）', async () => {
+  const fence = __test.platformFence(ctx, makeReq('POST'))
+  assert.equal(fence.available, false)
+  assert.equal(fence.verdict, null)
+  assert.equal(fence.error, null)
+
+  const bare = __test.platformFence(undefined, makeReq('POST'))
+  assert.equal(bare.available, false, '取不到 ctx 也不能抛')
+  assert.equal(bare.verdict, null)
+})
+
+await ok('平台门：ctx.get 抛异常时不硬拦（一次故障不能把重启按钮锁死）', async () => {
+  const fence = __test.platformFence({ get: () => { throw new Error('boom') } }, makeReq('POST'))
+  assert.equal(fence.available, false)
+  assert.equal(fence.verdict, null)
+  assert.match(String(fence.error), /boom/u, '要把原因记下来，便于诊断')
+})
+
+await ok('平台门：connection 没有 requestRejection 时按「不可用」处理', async () => {
+  const fence = __test.platformFence({
+    get: (name) => (name === 'connection' ? {} : undefined),
+  }, makeReq('POST'))
+  assert.equal(fence.available, false)
+  assert.equal(fence.verdict, null)
+})
+
+await ok('平台门：401 / 403 原样透传，undefined 表示放行', async () => {
+  const build = (verdict) => ({
+    get: (name) => (name === 'connection' ? { requestRejection: () => verdict } : undefined),
+  })
+  assert.deepEqual(__test.platformFence(build(401), makeReq('POST')), { available: true, verdict: 401, error: null })
+  assert.deepEqual(__test.platformFence(build(403), makeReq('POST')), { available: true, verdict: 403, error: null })
+  assert.deepEqual(__test.platformFence(build(undefined), makeReq('POST')), { available: true, verdict: null, error: null })
+})
+
+await ok('平台门：requestRejection 自己抛异常时按「不拦」处理并记下原因', async () => {
+  const ctxThrows = {
+    get: (name) => (name === 'connection' ? { requestRejection: () => { throw new Error('nope') } } : undefined),
+  }
+  const fence = __test.platformFence(ctxThrows, makeReq('POST'))
+  assert.equal(fence.available, true)
+  assert.equal(fence.verdict, null, '一次偶发故障不能放大成「应用重启不了」')
+  assert.match(String(fence.error), /nope/u)
+})
+
+await ok('平台门：401 与 403 给出不同的修法说明', async () => {
+  const unauthorized = __test.describeFenceRefusal({ verdict: 401 }, '重启')
+  const forbidden = __test.describeFenceRefusal({ verdict: 403 }, '重启')
+  assert.match(unauthorized, /会话凭据/u)
+  assert.match(unauthorized, /页面/u)
+  assert.match(forbidden, /信任栅栏/u)
+  assert.notEqual(unauthorized, forbidden, '两种拒绝混成一句会让人对着 403 瞎猜')
+  assert.match(__test.describeFenceRefusal({ verdict: 401 }, '清理设置'), /^清理设置/u, '要把操作名带上')
+})
+
+await ok('写路由：平台回 401 时重启被挡下，并说明缺会话凭据', async () => {
+  const routes401 = ctxWithConnection({ requestRejection: () => 401 })
+  const res = makeRes()
+  await routes401.get('/dsh-desktop-restart/api/restart').handler(makeReq('POST'), res)
+  assert.equal(res.statusCode, 401)
+  const body = JSON.parse(res.body)
+  assert.equal(body.ok, false)
+  assert.match(body.error, /会话凭据/u)
+})
+
+await ok('写路由：平台回 403 时清理请求被挡下，提示信任栅栏', async () => {
+  const routes403 = ctxWithConnection({ requestRejection: () => 403 })
+  const res = makeRes()
+  await routes403.get('/dsh-desktop-restart/api/sweep').handler(
+    makeReq('POST', { url: '/dsh-desktop-restart/api/sweep' }),
+    res,
+  )
+  assert.equal(res.statusCode, 403)
+  assert.match(JSON.parse(res.body).error, /信任栅栏/u)
+})
+
+await ok('写路由：平台放行时照常往下走（这里走到「不是桌面版」）', async () => {
+  const routesOpen = ctxWithConnection({ requestRejection: () => undefined })
+  const res = makeRes()
+  await routesOpen.get('/dsh-desktop-restart/api/restart').handler(makeReq('POST'), res)
+  assert.equal(res.statusCode, 409, '放行之后仍要过原有的各项拒绝路径')
+  assert.match(JSON.parse(res.body).error, /桌面版/u)
+})
+
+await ok('写路由：requestRejection 抛异常时不拦，仍走到后续判定', async () => {
+  const routesThrow = ctxWithConnection({ requestRejection: () => { throw new Error('nope') } })
+  const res = makeRes()
+  await routesThrow.get('/dsh-desktop-restart/api/restart').handler(makeReq('POST'), res)
+  assert.equal(res.statusCode, 409)
+  assert.match(JSON.parse(res.body).error, /桌面版/u)
+})
+
+await ok('状态路由：只诊断不拦 —— 鉴权失败也回 200 并把判定说出来', async () => {
+  const routes = ctxWithConnection({ requestRejection: () => 401 })
+  const res = makeRes()
+  await routes.get('/dsh-desktop-restart/api/status').handler(makeReq('GET'), res)
+  assert.equal(res.statusCode, 200, '状态路由必须能在鉴权失败时解释原因，而不是回 401')
+  const body = JSON.parse(res.body)
+  assert.equal(body.platformAuth.enforced, true)
+  assert.equal(body.platformAuth.available, true)
+  assert.equal(body.platformAuth.verdict, 401)
+  assert.equal(body.platformAuth.error, null)
+})
+
+await ok('platformAuth=false 可退回旧行为（给桌面壳不带 cookie 的部署留后路）', async () => {
+  const routes = ctxWithConnection({ requestRejection: () => 401 }, { platformAuth: false })
+  const restart = makeRes()
+  await routes.get('/dsh-desktop-restart/api/restart').handler(makeReq('POST'), restart)
+  assert.equal(restart.statusCode, 409, '关掉平台门后应当回到「不是桌面版」，而不是 401')
+  const status = makeRes()
+  await routes.get('/dsh-desktop-restart/api/status').handler(makeReq('GET'), status)
+  assert.equal(JSON.parse(status.body).platformAuth.enforced, false)
+})
+
 console.log('sweep')
 
 await ok('清理：只挑「启动前就存在、启动后没被写过、且躺够最小年龄」的快照目录', async () => {
@@ -1348,6 +1506,16 @@ await ok('helper：命令行分词在引号内保留空格', async () => {
   assert.deepEqual(helper.tokenizeCommandLine('  a   b  '), ['a', 'b'])
   assert.deepEqual(helper.tokenizeCommandLine('""'), [''])
   assert.deepEqual(helper.tokenizeCommandLine(''), [])
+})
+
+await ok('文档：README 里写的冒烟测试数量与实际一致', async () => {
+  // 这条挡的是「加了测试却忘了改文档」—— 也顺带挡住反过来的「文档说加了、其实没加」
+  // 那种曾经出现过的情况（2026-10-15：提交说明写着新增 10 项，仓库里一项都没有）。
+  const readme = readFileSync(join(libDir, '..', 'README.md'), 'utf8')
+  const claimed = /离线冒烟测试（(\d+) 项）/u.exec(readme)
+  assert.ok(claimed, 'README 必须写明冒烟测试的数量')
+  // 这一条自己也占一项，所以用 passed + 1 来比。
+  assert.equal(Number(claimed[1]), passed + 1, 'README 写的数量与实际不符：加了测试就要同步改文档')
 })
 
 console.log('')
