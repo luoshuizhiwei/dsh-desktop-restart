@@ -1508,6 +1508,35 @@ await ok('helper：命令行分词在引号内保留空格', async () => {
   assert.deepEqual(helper.tokenizeCommandLine(''), [])
 })
 
+await ok('helper：从 netstat 里认出「谁在听」（重启完成的新判据）', async () => {
+  // 0.2.1-rc.2 起桌面版每次启动换端口，所以不能再等旧端口回来，
+  // 只能反过来找「同一个可执行文件开着的回环监听」。
+  const sample = [
+    '',
+    '活动连接',
+    '',
+    '  协议  本地地址          外部地址        状态           PID',
+    '  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1000',
+    '  TCP    127.0.0.1:4453         0.0.0.0:0              LISTENING       47176',
+    '  TCP    127.0.0.1:8418         127.0.0.1:1335         ESTABLISHED     30396',
+    '  TCP    192.168.1.5:139        0.0.0.0:0              LISTENING       4',
+    '  TCP    [::1]:10317            [::]:0                 LISTENING       44896',
+    '  UDP    127.0.0.1:1900         *:*                                    3000',
+    '  TCP    fe80::1%12:54321       0.0.0.0:0              LISTENING       777',
+    '',
+  ].join('\r\n')
+  const rows = helper.parseNetstatListeners(sample)
+  assert.ok(Array.isArray(rows))
+  assert.deepEqual(
+    rows.map((row) => row.port).sort((a, b) => a - b),
+    [135, 4453, 10317],
+    '只取回环/通配地址上的 LISTENING：局域网地址、ESTABLISHED、UDP 都不算',
+  )
+  assert.deepEqual(rows.find((row) => row.port === 4453), { port: 4453, pid: 47176 })
+  assert.equal(helper.parseNetstatListeners(''), null, '读不到要回 null，而不是「没有在听」')
+  assert.equal(helper.parseNetstatListeners(undefined), null)
+})
+
 await ok('文档：README 里写的冒烟测试数量与实际一致', async () => {
   // 这条挡的是「加了测试却忘了改文档」—— 也顺带挡住反过来的「文档说加了、其实没加」
   // 那种曾经出现过的情况（2026-10-15：提交说明写着新增 10 项，仓库里一项都没有）。
