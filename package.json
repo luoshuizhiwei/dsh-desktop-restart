@@ -1,6 +1,6 @@
 {
   "name": "@luoshuizhiwei/dsh-desktop-restart",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "DeepSeek Harness desktop restart plugin: five entries (sidebar panel / sidebar footer / conversation header / slash command / settings row) restart the whole Electron app through a detached helper; restarts are hard-blocked while a plugin install/update is running; also sweeps DSH's leftover temp snapshots and hides the easy-to-misclick Feedback item. UI text follows the app's language (zh/en). 桌面版重启插件：五个入口一键重启整个 Electron 应用；插件安装/更新中硬拦重启；顺手清理 Temp 遗留快照、藏掉易误点的「意见反馈」；界面文案跟随主应用语言（中/英）。",
   "keywords": [
     "dsh",
@@ -26,7 +26,8 @@
     "scripts",
     "docs",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "README.en.md"
   ],
   "engines": {
     "node": ">=20",

@@ -989,9 +989,17 @@ await ok('client bundle：字典 zh/en 两表键一致，代码引用的键全�
     assert.ok(zhSet.has(key), `间接引用的键必须存在：${key}`)
   }
   // 设置分区里两件「与重启无关」的顺手功能合并进同一个分类（2026-10-20 用户
-  // 要求）：不再各挂各的小标题 —— 免得被其他用户当成重启功能的一部分。
-  assert.match(source, /t\("extrasSubtitle"\)/u, '两件附带功能应共用同一个分类标题（且标题要说明与重启无关）')
+  // 要求合并；同日第二次要求：标题只写「附带功能」，不特意标明与重启的关系）。
+  assert.match(source, /t\("extrasSubtitle"\)/u, '两件附带功能应共用同一个分类标题')
   assert.doesNotMatch(source, /sweepSubtitle|tidySubtitle/u, '旧的分开小标题应已移除')
+  assert.ok(
+    /extrasSubtitle: "附带功能",/u.test(source),
+    '中文标题应就是「附带功能」四个字（不带括号说明）',
+  )
+  assert.ok(
+    /extrasSubtitle: "Bundled extras",/u.test(source),
+    '英文标题不带 "unrelated to restarting" 括号说明',
+  )
 })
 
 await ok('client bundle：locale 服务可用则用之，不可用则按浏览器语言兜底', async () => {
@@ -1113,6 +1121,21 @@ await ok('package.json：client.inject 声明了官方组件库', async () => {
   const inject = packageJson.dsh.client.inject
   assert.ok(inject.includes('@deepseek-ai/dsh-client-ui-primitives'), '必须在 inject 里声明，加载器才会先注册它')
   assert.ok(inject.includes('@deepseek-ai/dsh-client-ui-conversation'), '标题栏座位来自这个包')
+})
+
+await ok('文档：英文 README 存在、进包、且与中文版互相链接（issue #1 的延伸）', async () => {
+  const enPath = join(libDir, '..', 'README.en.md')
+  assert.ok(existsSync(enPath), 'README.en.md 必须存在')
+  const en = readFileSync(enPath, 'utf8')
+  // 英文版要有内容、要有回链、要覆盖关键章节 —— 不是占位文件。
+  assert.ok(en.length > 8000, `英文 README 应当是完整翻译而不是占位（现在 ${String(en.length)} 字符）`)
+  assert.match(en, /\[简体中文\]\(README\.md\)/u, '英文版顶部要回链中文版')
+  for (const section of ['## Install', '## Usage', '## Security model', '## Known limitations']) {
+    assert.ok(en.includes(section), `英文版缺少章节：${section}`)
+  }
+  const zh = readFileSync(join(libDir, '..', 'README.md'), 'utf8')
+  assert.match(zh, /\[English\]\(README\.en\.md\)/u, '中文版顶部要前链英文版')
+  assert.ok(packageJson.files.includes('README.en.md'), 'files 必须包含 README.en.md，否则 npm 包里没有它')
 })
 
 await ok('会话标题栏：必须排在后台任务条目（order 20）之前', async () => {
