@@ -985,9 +985,13 @@ await ok('client bundle：字典 zh/en 两表键一致，代码引用的键全�
   assert.ok(entryKeys.length === 8, `ENTRY_LABELS 应有 4 行 × 2 键（现在 ${String(entryKeys.length)}）`)
   const entryMissing = entryKeys.filter((k) => !zhSet.has(k))
   assert.deepEqual(entryMissing, [], `ENTRY_LABELS 引用了不存在的键：${entryMissing.join(', ')}`)
-  for (const key of ['defaultHint', 'blockedFallback', 'guardFallback', 'sweepLastPrefix', 'sweepJustNow']) {
+  for (const key of ['defaultHint', 'blockedFallback', 'guardFallback', 'sweepLastPrefix', 'sweepJustNow', 'extrasSubtitle']) {
     assert.ok(zhSet.has(key), `间接引用的键必须存在：${key}`)
   }
+  // 设置分区里两件「与重启无关」的顺手功能合并进同一个分类（2026-10-20 用户
+  // 要求）：不再各挂各的小标题 —— 免得被其他用户当成重启功能的一部分。
+  assert.match(source, /t\("extrasSubtitle"\)/u, '两件附带功能应共用同一个分类标题（且标题要说明与重启无关）')
+  assert.doesNotMatch(source, /sweepSubtitle|tidySubtitle/u, '旧的分开小标题应已移除')
 })
 
 await ok('client bundle：locale 服务可用则用之，不可用则按浏览器语言兜底', async () => {
