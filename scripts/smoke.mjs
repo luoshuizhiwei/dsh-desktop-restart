@@ -975,8 +975,14 @@ await ok('client bundle：字典 zh/en 两表键一致，代码引用的键全�
   assert.ok(used.length > 40, `t() 引用应当覆盖几乎全部文案（现在 ${String(used.length)} 个）`)
   const missing = [...new Set(used)].filter((k) => !zhSet.has(k))
   assert.deepEqual(missing, [], `t() 引用了字典里不存在的键：${missing.join(', ')}`)
-  // 间接引用：ENTRY_LABELS 与 DEFAULT_HINT_KEY / hostMessage 的 fallbackKey
-  const entryKeys = [...source.matchAll(/\["([A-Za-z0-9_]+)",\s*"([A-Za-z0-9_]+)"\]/g)].flatMap((m) => [m[1], m[2]])
+  // 间接引用：ENTRY_LABELS 与 DEFAULT_HINT_KEY / hostMessage 的 fallbackKey。
+  // 只认 ENTRY_LABELS 那张表里的键对（锚定它后面的 t(copy[N])），否则
+  // inject: ["slots", "locale"] 这类服务名数组也会被这个形状误抓
+  // （0.4.1 首跑就这么红的 —— 服务声明不是字典键）。
+  const entryBlock = /const ENTRY_LABELS = \{([\s\S]*?)\n\t\t\}/.exec(source)
+  assert.ok(entryBlock, '必须保留 ENTRY_LABELS 表（四个入口的标题/说明键）')
+  const entryKeys = [...entryBlock[1].matchAll(/\["([A-Za-z0-9_]+)",\s*"([A-Za-z0-9_]+)"\]/g)].flatMap((m) => [m[1], m[2]])
+  assert.ok(entryKeys.length === 8, `ENTRY_LABELS 应有 4 行 × 2 键（现在 ${String(entryKeys.length)}）`)
   const entryMissing = entryKeys.filter((k) => !zhSet.has(k))
   assert.deepEqual(entryMissing, [], `ENTRY_LABELS 引用了不存在的键：${entryMissing.join(', ')}`)
   for (const key of ['defaultHint', 'blockedFallback', 'guardFallback', 'sweepLastPrefix', 'sweepJustNow']) {
@@ -990,6 +996,16 @@ await ok('client bundle：locale 服务可用则用之，不可用则按浏览�
   assert.match(source, /locale\.register\(LOCALE_NS, DICT\)/u, '必须把字典注册进官方 locale 服务')
   assert.match(source, /locale\.bind\(LOCALE_NS\)/u, '必须用官方 bind 拿翻译函数')
   assert.match(source, /navigator\.language/u, '兜底要按浏览器语言挑 zh/en')
+  // 接入约定（0.4.0 的教训，2026-10-20 实测）：服务必须在导出的 inject 数组里
+  // 声明、经 ctx.locale 访问 —— 只写 ctx.get("locale") 拿到 undefined，代码
+  // 静默落到浏览器语言兜底，主应用切英文也不管用。官方插件全库 350+ 处都是
+  // inject 声明的写法，ctx.get("locale") 仅 1 处例外。
+  assert.match(
+    source,
+    /inject:\s*\["slots",\s*"locale"\]/u,
+    '导出的 inject 数组必须声明 "locale"，否则服务根本注入不进来（0.4.0 因此失效）',
+  )
+  assert.match(source, /ctx\.locale/u, '必须经 ctx.locale 访问服务（inject 声明的注入方式）')
   // 注入声明
   const pkg = JSON.parse(readFileSync(join(libDir, '..', 'package.json'), 'utf8'))
   assert.ok(
