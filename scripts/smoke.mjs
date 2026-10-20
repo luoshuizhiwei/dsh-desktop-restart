@@ -1289,6 +1289,30 @@ await ok('文档：英文 README 存在、进包、且与中文版互相链接�
   assert.ok(packageJson.files.includes('README.en.md'), 'files 必须包含 README.en.md，否则 npm 包里没有它')
 })
 
+await ok('client bundle：两个侧栏入口用短名字，设置分区与页面标题保留全名', async () => {
+  const { plugin } = loadClientBundle()
+  const registered = []
+  const slots = {
+    inject: (name, fn) => { fn() },
+    register: (options) => { registered.push(options); return () => {} },
+  }
+  plugin.apply({
+    get: (key) => (key === 'slots' ? slots : undefined),
+    effect: (fn) => fn(),
+  })
+  const labelOfEntry = (entry) => (typeof entry.label === 'function' ? entry.label() : entry.label)
+  const panel = registered.find((entry) => entry.name === 'sidebar.panellist')
+  const foot = registered.find((entry) => entry.name === 'sidebar.footer.action')
+  const section = registered.find((entry) => entry.name === 'settings.section')
+  assert.ok(panel !== undefined && foot !== undefined && section !== undefined, '三个座位都要注册')
+  // 2026-10-20 用户：侧栏左上角那一条的名字也要短。侧栏行窄、收起或
+  // 被第三方皮肤镜像时更容易被挤长，所以入口用 4 字，分区/标题留全名。
+  for (const [name, entry] of [['左上角入口', panel], ['侧栏底部入口', foot]]) {
+    assert.equal(labelOfEntry(entry), '重启应用', `${name}应当用短名字`)
+  }
+  assert.equal(labelOfEntry(section), '重启桌面应用', '设置分区标题保留全名')
+})
+
 await ok('会话标题栏：必须排在后台任务条目（order 20）之前', async () => {
   const { plugin } = loadClientBundle()
   const registered = []
