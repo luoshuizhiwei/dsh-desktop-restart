@@ -117,7 +117,7 @@ The plugin ships a **settings section** with four toggles — changes apply **im
 | Conversation header button | the header button disappears |
 | Settings → General row | the fallback row in General settings disappears |
 
-Choices are stored in the **local browser** (`localStorage`); **defaults** come from the plugin's config — in `~/.dsh/profiles/<profile>/cordis.patch.yml`, set `config: { panel: false, footer: false, header: false, settingsRow: false, command: false, enabled: false }` on this plugin's row to change them in one place (`command` is the `/restart-desktop` slash command; `enabled` is the master switch).
+All four entries and the slash command are **on by default** (a fresh install shows the entry in all four places); choices are stored in the **local browser** (`localStorage`); **defaults** come from the plugin's config — in `~/.dsh/profiles/<profile>/cordis.patch.yml`, set `config: { panel: false, footer: false, header: false, settingsRow: false, command: false, enabled: false }` on this plugin's row to change them in one place (`command` is the `/restart-desktop` slash command; `enabled` is the master switch).
 
 ## Sweeping leftover change snapshots
 
@@ -133,7 +133,7 @@ This plugin takes over that cleanup: **10 s after startup** (async, not competin
 | Not written since this host started | someone still writing to it means it isn't alone |
 | At least 24 hours old | headroom for a second DSH instance running at the same time |
 
-The toggle lives in **Settings → Plugins → Restart Desktop App** (the plugin's own settings section), on by default; the same row has a "Sweep now" button for a manual pass. The switch is stored host-side (`~/.dsh/desktop-restart/settings.json`) because the sweep must run before any client connects; when off, the host touches nothing.
+**Off by default** (since 2026-10-20): a fresh install touches nothing in the system Temp folder — turn it on in **Settings → Plugins → Restart Desktop App** (a deployment that wants it on by default can set `sweep: true` in config); the same row has a "Sweep now" button for a manual pass. The switch is stored host-side (`~/.dsh/desktop-restart/settings.json`) because the sweep must run before any client connects; when off, the host touches nothing.
 
 "Sweep now" uses **the same criteria** — it does not loosen them just because a human clicked — so a directory left by a crash earlier today is only removed after its 24 hours. That is deliberate: the age threshold is exactly what separates "orphan" from "a live session in another instance".
 
@@ -147,7 +147,7 @@ In the account menu (the avatar / "More" at the bottom of the sidebar), right be
 
 | Aspect | Behavior |
 | --- | --- |
-| Default | **hidden** — an easy-to-misclick item shouldn't sit under "Settings" by default |
+| Default | **not hidden** (since 2026-10-20: a fresh install leaves the menu as it is; turn it on to hide). It used to be hidden by default |
 | Toggle | **Settings → Plugins → Restart Desktop App → Bundled extras** |
 | Stored | local browser (`localStorage`); the host is not involved |
 | After turning off | the hidden item **reappears immediately**, no refresh |

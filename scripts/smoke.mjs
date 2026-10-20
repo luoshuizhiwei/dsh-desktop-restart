@@ -876,6 +876,21 @@ await ok('插件设置：写进去读得回来，坏文件退回默认', async (
 await ok('清理：设置文件里没有这一项时，默认值来自 config', async () => {
   // 先把设置文件清掉，模拟「用户没改过」。
   rmSync(join(String(process.env.DSH_HOME), 'desktop-restart', 'settings.json'), { force: true })
+
+  // ① 新用户（没 config、没设置文件）→ **默认关闭**（2026-10-20 用户定）：
+  //    装上插件不该顺手改掉系统行为，要清理的人自己开。
+  const freshRoutes = new Map()
+  hostHalf.apply({
+    effect: (fn) => { fn() },
+    webServer: { port: 19387, register: (spec) => { freshRoutes.set(spec.path, spec); return () => {} } },
+    logger: () => ({ info() {}, warn() {}, error() {} }),
+    inject: () => {},
+  }, { command: false })
+  const freshRes = makeRes()
+  freshRoutes.get('/dsh-desktop-restart/api/status').handler(makeReq('GET'), freshRes)
+  assert.equal(JSON.parse(freshRes.body).sweep.enabled, false, '新用户默认不做自动清理')
+
+  // ② config 显式关 → 关
   const probeRoutes = new Map()
   hostHalf.apply({
     effect: (fn) => { fn() },
@@ -886,6 +901,18 @@ await ok('清理：设置文件里没有这一项时，默认值来自 config', 
   const res = makeRes()
   probeRoutes.get('/dsh-desktop-restart/api/status').handler(makeReq('GET'), res)
   assert.equal(JSON.parse(res.body).sweep.enabled, false, 'config.sweep=false 且用户没改过 → 关闭')
+
+  // ③ config 显式开 → 开（部署方要一份「默认开启」时仍可给）
+  const onRoutes = new Map()
+  hostHalf.apply({
+    effect: (fn) => { fn() },
+    webServer: { port: 19387, register: (spec) => { onRoutes.set(spec.path, spec); return () => {} } },
+    logger: () => ({ info() {}, warn() {}, error() {} }),
+    inject: () => {},
+  }, { sweep: true, command: false })
+  const onRes = makeRes()
+  onRoutes.get('/dsh-desktop-restart/api/status').handler(makeReq('GET'), onRes)
+  assert.equal(JSON.parse(onRes.body).sweep.enabled, true, 'config.sweep=true → 开启')
 })
 
 await ok('清理设置路由：非 POST 返回 405', async () => {
@@ -1529,68 +1556,86 @@ await ok('插件开关：清理结果要显眼 —— 独立一行、按结果�
   )
 })
 
-await ok('顺手收拾界面：默认按文字藏掉账号菜单里的「意见反馈」，且不碰别的行', async () => {
-  const loads = []
+await ok('顺手收拾界面：默认不动；明确开启后才藏，且不碰别的行', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  /** 一个只够本插件用的假菜单项。 */
-  const makeItem = (text) => ({
-    nodeType: 1,
-    role: 'menuitem',
-    textContent: text,
-    parentElement: null,
-    style: {},
-    attrs: {},
-    matches: (selector) => selector === 'button[role="menuitem"]',
-    querySelectorAll: () => [],
-    setAttribute(key, value) { this.attrs[key] = value },
-    removeAttribute(key) { delete this.attrs[key] },
-  })
-  const contact = makeItem('意见反馈')
-  const settings = makeItem('设置')
-  const observerState = { observed: false }
-  class FakeMutationObserver {
-    observe() { observerState.observed = true }
-    disconnect() {}
-  }
-  runInNewContext(source, {
-    window: {
-      __ModuleLoader__: { load: (spec) => loads.push(spec) },
-      localStorage: { getItem: () => null, setItem: () => {} },
-    },
-    document: {
-      body: {
-        nodeType: 1,
-        textContent: '',
-        matches: () => false,
-        querySelectorAll: (selector) => (selector === 'button[role="menuitem"]' ? [settings, contact] : []),
-      },
-      // 本插件还会在这次调用里注入一次自己的样式（真实浏览器里是 <style>）——
-      // 假 DOM 得让这条路径也走得通，否则测不到下面的行为。
-      querySelector: () => null,
-      createElement: () => ({ dataset: {} }),
-      head: { appendChild: () => {} },
-      querySelectorAll: () => [],
-    },
-    MutationObserver: FakeMutationObserver,
-  })
   const react = {
     createElement: () => null,
     useState: (initial) => [initial, () => {}],
     useEffect: () => {},
     useRef: () => ({ current: null }),
   }
-  const plugin = loads[0].factory((name) => (name === 'react' ? react : undefined))
-  const slots = { inject: (name, fn) => { fn() }, register: () => () => {} }
-  plugin.apply({ get: (key) => (key === 'slots' ? slots : undefined), effect: (fn) => fn() })
-  assert.equal(contact.style.display, 'none', '默认就该把「意见反馈」藏起来')
-  assert.equal(contact.attrs['data-dshdr-hidden'], '1', '要留标记，关掉开关时才恢复得回来')
-  assert.equal(settings.style.display, undefined, '「设置」那一项：一个字节都不许动')
-  assert.equal(observerState.observed, true, '要盯着以后挂上来的菜单（它是点开才渲染的）')
-  assert.equal(
-    loads[0].factory.length,
-    1,
-    'factory 仍然只接受 require 一个参数',
-  )
+  /**
+   * 在给定的本机存储值下跑一遍 apply。
+   * @param {string | null} stored - localStorage 里存的值（null = 新用户）。
+   * @returns {{ contact: object, settings: object, observerState: { observed: boolean }, load: object }} 现场。
+   */
+  const runWith = (stored) => {
+    const loads = []
+    /** 一个只够本插件用的假菜单项。 */
+    const makeItem = (text) => ({
+      nodeType: 1,
+      role: 'menuitem',
+      textContent: text,
+      parentElement: null,
+      style: {},
+      attrs: {},
+      matches: (selector) => selector === 'button[role="menuitem"]',
+      querySelectorAll: () => [],
+      setAttribute(key, value) { this.attrs[key] = value },
+      removeAttribute(key) { delete this.attrs[key] },
+    })
+    const contact = makeItem('意见反馈')
+    const settings = makeItem('设置')
+    const observerState = { observed: false }
+    class FakeMutationObserver {
+      observe() { observerState.observed = true }
+      disconnect() {}
+    }
+    runInNewContext(source, {
+      window: {
+        __ModuleLoader__: { load: (spec) => loads.push(spec) },
+        localStorage: { getItem: () => stored, setItem: () => {} },
+      },
+      document: {
+        body: {
+          nodeType: 1,
+          textContent: '',
+          matches: () => false,
+          querySelectorAll: (selector) => (selector === 'button[role="menuitem"]' ? [settings, contact] : []),
+        },
+        querySelector: () => null,
+        createElement: () => ({ dataset: {} }),
+        head: { appendChild: () => {} },
+        querySelectorAll: () => [],
+      },
+      MutationObserver: FakeMutationObserver,
+    })
+    const plugin = loads[0].factory((name) => (name === 'react' ? react : undefined))
+    const slots = { inject: (name, fn) => { fn() }, register: () => () => {} }
+    plugin.apply({ get: (key) => (key === 'slots' ? slots : undefined), effect: (fn) => fn() })
+    return { contact, settings, observerState, load: loads[0] }
+  }
+
+  // ① 新用户：什么都没存 → **不动**（2026-10-20 用户定：附带功能默认关闭）
+  const fresh = runWith(null)
+  assert.equal(fresh.contact.style.display, undefined, '没存过时默认不藏')
+  assert.equal(fresh.contact.attrs['data-dshdr-hidden'], undefined, '不该留隐藏标记')
+  assert.equal(fresh.observerState.observed, false, '没开启时不必盯着菜单')
+  assert.equal(fresh.settings.style.display, undefined, '「设置」那一项：一个字节都不许动')
+
+  // ② 用户明确开启（存 "1"）→ 藏掉并留标记
+  const on = runWith('1')
+  assert.equal(on.contact.style.display, 'none', '开启后要藏掉「意见反馈」')
+  assert.equal(on.contact.attrs['data-dshdr-hidden'], '1', '要留标记，关掉开关时才恢复得回来')
+  assert.equal(on.settings.style.display, undefined, '「设置」那一项：一个字节都不许动')
+  assert.equal(on.observerState.observed, true, '要盯着以后挂上来的菜单（它是点开才渲染的）')
+
+  // ③ 用户明确关闭（存 "0"）→ 不动
+  const off = runWith('0')
+  assert.equal(off.contact.style.display, undefined, '明确关闭时不动')
+  assert.equal(off.observerState.observed, false, '关闭时也不必盯着菜单')
+
+  assert.equal(fresh.load.factory.length, 1, 'factory 仍然只接受 require 一个参数')
 })
 
 await ok('顺手收拾界面：开关存在本机、关掉能原样恢复，认不出文字就不动手', async () => {
@@ -1601,7 +1646,7 @@ await ok('顺手收拾界面：开关存在本机、关掉能原样恢复，认�
   assert.match(source, /node\.removeAttribute\(HIDER_ATTR\)/u, '关掉开关要把标记摘掉')
   assert.match(source, /node\.style\.display = ""/u, '关掉开关要把被藏的元素放开')
   assert.match(source, /HIDE_CONTACT_STORE_KEY/u, '开关存本机即可（这是纯客户端行为）')
-  assert.match(source, /raw === null \? true : raw !== "0"/u, '没存过时默认隐藏')
+  assert.match(source, /raw === null \? false : raw !== "0"/u, '没存过时默认不藏（新用户原样）')
   assert.match(source, /CONTACT_LABELS\.indexOf\(text\) < 0/u, '认不出就跳过，绝不误伤别的菜单项')
 })
 
