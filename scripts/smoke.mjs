@@ -948,7 +948,70 @@ await ok('client bundle：安装中的硬拦不弹「仍要重启」，也不说
   assert.ok(blockedAt > 0, '必须识别宿主半的硬拦响应')
   assert.ok(blockedAt < guardAt, '硬拦要排在守卫确认之前，否则会弹一个勾选了也没用的确认框')
   assert.match(source, /guardSuffix/u, '守卫提示的出路必须按 blocked 分开写')
-  assert.match(source, /装完之前不能重启/u, '硬拦时必须说清「装完之前不能重启」')
+  assert.match(source, /blockedSuffix/u, '硬拦时必须说清「装完之前不能重启」（字典键）')
+})
+
+await ok('client bundle：字典 zh/en 两表键一致，代码引用的键全部存在（issue #1）', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  // 抠出 DICT 的两个语言表
+  const dictStart = source.indexOf('const DICT = {')
+  assert.ok(dictStart > 0, '必须有字典')
+  const tableOf = (lang) => {
+    const start = source.indexOf(lang + ': {', dictStart)
+    assert.ok(start > 0, `字典里必须有 ${lang} 表`)
+    const end = source.indexOf('},', start)
+    return source.slice(start, end)
+  }
+  const keysOf = (table) => [...table.matchAll(/^\t{4}([A-Za-z0-9_]+):/gm)].map((m) => m[1])
+  const zh = keysOf(tableOf('zh'))
+  const en = keysOf(tableOf('en'))
+  assert.equal(zh.length, en.length, '两个语言表的键数必须一致')
+  const zhSet = new Set(zh)
+  const enSet = new Set(en)
+  assert.deepEqual(zh.filter((k) => !enSet.has(k)), [], '只在 zh 里的键是坏键')
+  assert.deepEqual(en.filter((k) => !zhSet.has(k)), [], '只在 en 里的键是坏键')
+  // 代码里 t("key") 引用的每一个键都必须在表里
+  const used = [...source.matchAll(/\bt\("([A-Za-z0-9_]+)"\)/g)].map((m) => m[1])
+  assert.ok(used.length > 40, `t() 引用应当覆盖几乎全部文案（现在 ${String(used.length)} 个）`)
+  const missing = [...new Set(used)].filter((k) => !zhSet.has(k))
+  assert.deepEqual(missing, [], `t() 引用了字典里不存在的键：${missing.join(', ')}`)
+  // 间接引用：ENTRY_LABELS 与 DEFAULT_HINT_KEY / hostMessage 的 fallbackKey
+  const entryKeys = [...source.matchAll(/\["([A-Za-z0-9_]+)",\s*"([A-Za-z0-9_]+)"\]/g)].flatMap((m) => [m[1], m[2]])
+  const entryMissing = entryKeys.filter((k) => !zhSet.has(k))
+  assert.deepEqual(entryMissing, [], `ENTRY_LABELS 引用了不存在的键：${entryMissing.join(', ')}`)
+  for (const key of ['defaultHint', 'blockedFallback', 'guardFallback', 'sweepLastPrefix', 'sweepJustNow']) {
+    assert.ok(zhSet.has(key), `间接引用的键必须存在：${key}`)
+  }
+})
+
+await ok('client bundle：locale 服务可用则用之，不可用则按浏览器语言兜底', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  // 注册进官方 locale（语言跟随主应用）；注册失败/服务缺席时保留兜底 —— 不能起不来。
+  assert.match(source, /locale\.register\(LOCALE_NS, DICT\)/u, '必须把字典注册进官方 locale 服务')
+  assert.match(source, /locale\.bind\(LOCALE_NS\)/u, '必须用官方 bind 拿翻译函数')
+  assert.match(source, /navigator\.language/u, '兜底要按浏览器语言挑 zh/en')
+  // 注入声明
+  const pkg = JSON.parse(readFileSync(join(libDir, '..', 'package.json'), 'utf8'))
+  assert.ok(
+    pkg.dsh?.client?.inject?.includes('@deepseek-ai/dsh-client-locale'),
+    'package.json 的 dsh.client.inject 必须声明 locale 包',
+  )
+  // 模块级不再有写死的界面中文 —— 字典与 CONTACT_LABELS（按文字认菜单项，
+  // 中英都要认，不能翻译）是仅有的例外。
+  const dictStart = source.indexOf('const DICT = {')
+  const dictEnd = source.indexOf('};', source.indexOf('hideContactOff:'))
+  const outside = source.slice(0, dictStart) + source.slice(dictEnd + 2)
+  const lines = outside.split('\n')
+  const offenders = []
+  lines.forEach((line, index) => {
+    if (/const CONTACT_LABELS/.test(line)) return
+    for (const hit of line.matchAll(/"([^"\n]*[\u4e00-\u9fff][^"\n]*)"/g)) offenders.push(`L${String(index + 1)}: ${hit[1]}`)
+  })
+  assert.deepEqual(
+    offenders,
+    [],
+    `字典之外仍有写死的中文界面文案（issue #1 的回归）：${offenders.join(' | ')}`,
+  )
 })
 
 await ok('client bundle：自己注入样式，且重复加载不重复插入', async () => {
