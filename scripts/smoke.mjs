@@ -1177,6 +1177,43 @@ await ok('client bundle：状态变化对读屏可见（aria-live / aria-label /
   assert.match(source, /"aria-busy"/u)
 })
 
+await ok('client bundle：aria-label 绝不放动态提示（皮肤插件会把它当可见标题）', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  // 2026-10-20 用户上报：dsh-claude-style 接管侧栏底部时用
+  // `getAttribute("aria-label") || textContent` 当行标题，我们把
+  // 「有任务在跑（…）；点两次仍可重启」塞进 aria-label，结果那句话
+  // 被画成了按钮文字。这条断言把「提示不得进 aria-label」钉死。
+  const start = source.indexOf('function ariaLabelOf')
+  assert.ok(start > 0, '必须有 ariaLabelOf')
+  const body = source.slice(start, source.indexOf('\n\t\t}', start) + 3)
+  assert.ok(body.length > 100, `ariaLabelOf 函数体要能完整截取（现在 ${String(body.length)}）`)
+  assert.doesNotMatch(body, /guardHint/u, 'aria-label 不得包含守卫提示（会被皮肤插件画成可见文字）')
+  assert.doesNotMatch(body, /message/u, 'aria-label 不得包含结果消息')
+  assert.doesNotMatch(body, /ariaWithGuard/u, '拼长句的那个键已废弃')
+  // 提示改走 aria-describedby，且目标是一段视觉隐藏文本
+  assert.match(source, /function ariaDescriptionOf/u, '必须有独立的详细提示函数')
+  assert.match(source, /"aria-describedby": described === "" \? undefined : hintId/u, '两个常驻按钮都要接 describedby')
+  assert.match(source, /className: "dshdr-sr-only"/u, 'describedby 的目标必须是视觉隐藏文本')
+  assert.match(source, /\.dshdr-sr-only\{position:absolute;[^}]*clip:rect/u, 'sr-only 样式必须真的把它藏掉')
+  // 提示不许进按钮的 textContent（皮肤插件在 aria-label 缺失时也会读它）
+  const headerAt = source.indexOf('function HeaderRestartButton')
+  const headerBody = source.slice(headerAt, source.indexOf('function SettingsRestartRow', headerAt))
+  assert.match(headerBody, /described !== "" && React\.createElement\("span", \{ id: hintId/u, '隐藏提示是按钮的兄弟节点，不在按钮里面')
+})
+
+await ok('client bundle：无障碍文案保持短（≤12 字），不随状态膨胀', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  const dictStart = source.indexOf('const DICT = {')
+  const zhStart = source.indexOf('zh: {', dictStart)
+  const zhBlock = source.slice(zhStart, source.indexOf('en: {', zhStart))
+  const pairs = [...zhBlock.matchAll(/^\t{4}(aria[A-Za-z]+): "([^"]*)",/gm)].map((m) => [m[1], m[2]])
+  assert.ok(pairs.length >= 6, `aria* 键应至少 6 个（现在 ${String(pairs.length)}）`)
+  for (const [key, text] of pairs) {
+    assert.ok(text.length <= 12, `${key} 太长（${String(text.length)} 字）：${text}`)
+    assert.doesNotMatch(text, /任务|队列|安装/u, `${key} 不该带动态状态：${text}`)
+  }
+})
+
 await ok('client bundle：图标优先用官方 IconRefreshOutlineRegular，兜底也是 16 格描边', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   assert.match(source, /UI\.IconRefreshOutlineRegular/u, '官方图标集里有现成的刷新图标，优先用它')
