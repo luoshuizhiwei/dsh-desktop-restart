@@ -1201,16 +1201,27 @@ await ok('client bundle：aria-label 绝不放动态提示（皮肤插件会把�
   assert.match(headerBody, /described !== "" && React\.createElement\("span", \{ id: hintId/u, '隐藏提示是按钮的兄弟节点，不在按钮里面')
 })
 
-await ok('client bundle：无障碍文案保持短（≤12 字），不随状态膨胀', async () => {
+await ok('client bundle：无障碍文案压到 4 字以内（皮肤插件会把它当行标题显示）', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   const dictStart = source.indexOf('const DICT = {')
   const zhStart = source.indexOf('zh: {', dictStart)
   const zhBlock = source.slice(zhStart, source.indexOf('en: {', zhStart))
   const pairs = [...zhBlock.matchAll(/^\t{4}(aria[A-Za-z]+): "([^"]*)",/gm)].map((m) => [m[1], m[2]])
-  assert.ok(pairs.length >= 6, `aria* 键应至少 6 个（现在 ${String(pairs.length)}）`)
+  assert.ok(pairs.length >= 7, `aria* 键应至少 7 个（现在 ${String(pairs.length)}）`)
   for (const [key, text] of pairs) {
-    assert.ok(text.length <= 12, `${key} 太长（${String(text.length)} 字）：${text}`)
-    assert.doesNotMatch(text, /任务|队列|安装/u, `${key} 不该带动态状态：${text}`)
+    // 4 字是用户 2026-10-20 定的口径：这一行会原样出现在第三方皮肤的侧栏里。
+    assert.ok(text.length <= 4, `${key} 超过 4 字（${String(text.length)} 字）：${text}`)
+    // 黑名单只管**动态词**：计数与状态描述会被皮肤插件画成常驻行标题，
+    // 而 4 字上限已经挡住了修饰语堆叠。
+    assert.doesNotMatch(text, /任务|队列|安装|项|个/u, `${key} 不该带动态状态：${text}`)
+  }
+  // 英文侧同样要短（这一行在英文界面里也会被画出来）
+  const enStart = source.indexOf('en: {', zhStart)
+  const enBlock = source.slice(enStart, source.indexOf('\t\t\t},', enStart))
+  const enPairs = [...enBlock.matchAll(/^\t{4}(aria[A-Za-z]+): "([^"]*)",/gm)].map((m) => [m[1], m[2]])
+  assert.equal(enPairs.length, pairs.length, '中英 aria 键数必须一致')
+  for (const [key, text] of enPairs) {
+    assert.ok(text.length <= 16, `${key} 英文太长（${String(text.length)} 字符）：${text}`)
   }
 })
 
