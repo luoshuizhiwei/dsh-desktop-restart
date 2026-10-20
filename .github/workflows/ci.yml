@@ -14,6 +14,11 @@
 #
 #    npm 的 Trusted Publishing 现只接受这两个运行环境（2026-10 时点），
 #    因此矩阵固定，不可换 ubuntu-latest 之外的项。
+#
+# 3. release：npm 发布成功后，给同一个标签建 GitHub Release（自动生成变更
+#    说明）。**tag 只是提交上的书签，Releases 页读的是 Release 对象** ——
+#    2026-10-20 之前只推 tag 没建 Release，于是 npm 到了 0.4.3、Releases
+#    页却停在 v0.3.0。
 name: ci
 
 on:
@@ -69,3 +74,25 @@ jobs:
       # 优先走短命令牌，占位反而多一种失败形态。
       - name: Publish to npm (OIDC trusted publishing)
         run: npm publish --ignore-scripts
+
+  release:
+    # 排在 publish 之后：Release 一旦出现，就说明 npm 上确实已经有这个版本。
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # 建 Release 需要写仓库内容
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # --generate-notes 要靠完整历史找「上一个 tag」来划分变更范围。
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
