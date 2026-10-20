@@ -92,7 +92,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            --verify-tag
+          # 正文用**标签注解**，不用 --generate-notes：本仓库直接提交到 master、
+          # 几乎不建 PR，GitHub 自动生成的说明只有一行 Full Changelog（实测
+          # v0.4.3 就是这样，等于没有说明）。我们打标签时的注解本身就是一份
+          # 中文变更摘要，正好当 Release 正文。
+          tag="$GITHUB_REF_NAME"
+          prev="$(git describe --tags --abbrev=0 "${tag}^")"
+          note="$(git for-each-ref --format='%(contents)' "refs/tags/${tag}")"
+          {
+            printf '%s\n\n' "$note"
+            printf '**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$GITHUB_REPOSITORY" "$prev" "$tag"
+          } > release-notes.md
+          gh release create "$tag" --title "$tag" --notes-file release-notes.md --verify-tag
