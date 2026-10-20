@@ -101,6 +101,7 @@ dsh plugin add @luoshuizhiwei/dsh-desktop-restart
 **界面语言**（2026-10-08 第三轮）：直接用**官方标准件**，不是照着画的。
 
 - **左上角那一条挂在官方的面板座位上**（`sidebar.panellist`，官方给第三方插件的面板座位）：插件只登记 `id / order / 文案` 和一个图标组件，**整行（按钮、tooltip、文字、active 态、收起态）都由侧栏自己绘制** —— 所以它不可能不像官方。点一下会把主区切到同名的 `main` 面板，面板里用官方 `Button`（primary）触发重启。
+- **主区那个面板按同座位（任务看板）的页面版式**：铺满主区高度、自带 `--dsw-alias-bg-base`、内边距 `14px 16px 16px`、标题 16px/700 与右上角状态词同一行、块间距 12px；说明、守卫警告、结果各成一枚圆角卡片。（2026-10-20 用户指出布局有问题：原先 32/24 内边距的 560px 窄栏浮在满高主区里，像一段文字飘在空白中。）
 - **左侧边栏底部那个入口挂在官方座位 `sidebar.footer.action` 上**（应用自己的插件面板也在那里），并照抄同座位占用者（官方插件面板 / `dsh-diff-approval`）的 42px 动作行：`height:42px`、`border-radius:12px`、`gap:8px`、`padding:0 10px 0 8px`、14px/22px、hover / active 加 `--dsw-alias-interactive-bg-hover` 底色；侧栏收起成 rail 时变 36×36 圆形（座位会把 `{ wide }` 传进来）。
 - 标题栏按钮照抄同一个座位里官方那个真实按钮（`ui-jobs` 的 `JobListAction`）：`min-height:28px`、`--dsw-radius-sm`、`padding:3px 2px`、`gap:3px`、`12px/18px`、字色 `--dsw-alias-label-tertiary`，hover / focus 只把字色提到 `--dsw-alias-label-secondary`（不加底色）；窄窗口 540px 以下只留图标。
 - 设置页按钮用官方 `Button`（`variant="ghost"`）；图标用官方 `IconRefreshOutlineRegular`（应用自己也是 size 14）；**会打断工作时的确认用官方 `RiskConfirmation`** —— 警告 + 显式勾选 + 确认按钮，勾选前确认按钮不可用。
@@ -248,7 +249,7 @@ failure notice dispatched to the user
 node scripts/smoke.mjs
 ```
 
-离线冒烟测试（110 项，其中 4 项仅 Windows）：宿主半用桩上下文加载，只验证路由守卫与全部拒绝路径；守卫的判据（任务快照、安装记录、进程存活、平台鉴权判定、拒绝文案、路径过滤、命令行分词、netstat 监听解析、等待判定）是纯函数，直接单测；孤儿快照的判定是纯函数（含「启动后才建」「启动后被写过」「太年轻」三个反例），删除本身在临时目录里真跑一遍；客户端那半校验包身份、注入写法、尺寸与配色对齐官方、颜色语义与无障碍属性；helper 走「映像名不匹配」「拉起来又立刻退出」「问不出进程表」「端口迟迟不放」四条分支（这四条依赖 tasklist / taskkill / where.exe，**仅在 Windows 上实测**，CI 的 Linux/macOS 跳过并计数；其余纯函数用例三平台全跑 —— 2026-10-20 CI 首跑 Linux 就靠这个抓出过一条把 Windows 行为写死成全平台事实的断言）。（最后一条用测试自己拉起的替身进程当 host、自己占住的端口当被占端口，且 `alertOnFailure: false` 不弹窗）。**它不会重启任何东西**，也不会碰真实的系统 Temp（清理相关的用例都把 `TMP`/`TEMP` 与 `DSH_HOME` 指向本次测试的临时目录），自己建的临时目录还会在退出时删干净（2026-10-09 之前每跑一次就往系统 Temp 里留 5 个空目录）。
+离线冒烟测试（111 项，其中 4 项仅 Windows）：宿主半用桩上下文加载，只验证路由守卫与全部拒绝路径；守卫的判据（任务快照、安装记录、进程存活、平台鉴权判定、拒绝文案、路径过滤、命令行分词、netstat 监听解析、等待判定）是纯函数，直接单测；孤儿快照的判定是纯函数（含「启动后才建」「启动后被写过」「太年轻」三个反例），删除本身在临时目录里真跑一遍；客户端那半校验包身份、注入写法、尺寸与配色对齐官方、颜色语义与无障碍属性；helper 走「映像名不匹配」「拉起来又立刻退出」「问不出进程表」「端口迟迟不放」四条分支（这四条依赖 tasklist / taskkill / where.exe，**仅在 Windows 上实测**，CI 的 Linux/macOS 跳过并计数；其余纯函数用例三平台全跑 —— 2026-10-20 CI 首跑 Linux 就靠这个抓出过一条把 Windows 行为写死成全平台事实的断言）。（最后一条用测试自己拉起的替身进程当 host、自己占住的端口当被占端口，且 `alertOnFailure: false` 不弹窗）。**它不会重启任何东西**，也不会碰真实的系统 Temp（清理相关的用例都把 `TMP`/`TEMP` 与 `DSH_HOME` 指向本次测试的临时目录），自己建的临时目录还会在退出时删干净（2026-10-09 之前每跑一次就往系统 Temp 里留 5 个空目录）。
 
 ## 语言
 

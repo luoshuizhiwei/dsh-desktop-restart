@@ -1225,6 +1225,28 @@ await ok('client bundle：无障碍文案压到 4 字以内（皮肤插件会把
   }
 })
 
+await ok('client bundle：主区面板按同座位（任务看板）的页面版式排', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  // 2026-10-20 用户反馈：点左上角进去那页「布局有问题」——内容是 32/24 内边距
+  // 的 560px 窄栏浮在满高主区里。原生版式（任务看板 [data-dsh-taskboard-view]）
+  // 是：铺满高度 + bg-base + 14/16 内边距 + 标题 16px/700 与右侧工具同一行。
+  assert.match(source, /\.dshdr-panel\{[^}]*height:100%[^}]*\}/u, '面板要铺满主区高度')
+  assert.match(source, /\.dshdr-panel\{[^}]*background:var\(--dsw-alias-bg-base/u, '面板要自带 bg-base，别让底色透出')
+  assert.match(source, /\.dshdr-panel\{[^}]*padding:14px 16px 16px/u, '内边距要与任务看板一致（14/16）')
+  assert.doesNotMatch(source, /\.dshdr-panel\{[^}]*max-width:560px/u, '不该再用 560px 窄栏')
+  assert.doesNotMatch(source, /\.dshdr-panel\{[^}]*margin:0 auto/u, '窄栏居中会让内容浮在页面中间')
+  assert.match(source, /\.dshdr-panel-title\{[^}]*font-weight:700/u, '标题字重照原生（700，不是 500）')
+  // 标题与状态同一行
+  assert.match(source, /\.dshdr-panel-header\{[^}]*align-items:center/u, '标题行要横向排列')
+  assert.match(source, /\.dshdr-panel-status\{[^}]*margin-left:auto/u, '状态词靠右')
+  assert.match(source, /function statusOf\(action\)/u, '要有状态词函数')
+  // 说明 / 警告 / 结果都是卡片，而不是一行灰字
+  assert.match(source, /\.dshdr-panel-warn\{[^}]*border:1px solid[^}]*border-radius:12px/u, '警告块要卡片化')
+  assert.match(source, /\.dshdr-panel-note\{[^}]*border:1px solid[^}]*border-radius:12px/u, '结果块要卡片化')
+  // 守卫提示单独成块，不再拼进说明里
+  assert.match(source, /const guardWarn = action\.guardHint === ""/u, '守卫提示要单独成一块')
+})
+
 await ok('client bundle：图标优先用官方 IconRefreshOutlineRegular，兜底也是 16 格描边', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   assert.match(source, /UI\.IconRefreshOutlineRegular/u, '官方图标集里有现成的刷新图标，优先用它')
