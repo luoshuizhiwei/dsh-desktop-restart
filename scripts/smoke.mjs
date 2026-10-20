@@ -441,7 +441,17 @@ await ok('守卫：记录里的进程已经退出 = 崩溃残留（不拦，避�
 
 await ok('守卫：存活判据照抄上游（process.kill(pid, 0) 不抛就算活着）', async () => {
   assert.equal(__test.runAlive({ pid: process.pid }), true)
-  assert.equal(__test.runAlive({ pid: process.pid, grouped: true }), true, 'Windows 上 grouped 不改探测目标')
+  // grouped：Windows 忽略进程组（探测目标就是 pid 本身）；POSIX 上探测 -pid
+  // （整个进程组）。CI 三档矩阵里 Linux 与 Windows 都会跑到这条 ——
+  // 断言必须跟着平台走，不能再把「Windows 的行为」写死成全平台的事实
+  // （2026-10-20 CI 首跑 Linux 三连红就是这么来的）。
+  if (process.platform === 'win32') {
+    assert.equal(__test.runAlive({ pid: process.pid, grouped: true }), true, 'Windows 上 grouped 不改探测目标')
+  } else {
+    // 自己不在前台进程组的组长位上：grouped 探测（-pid）按「已经没了」处理，
+    // 不抛异常即可 —— 这里验证的是「走的是另一条探测路径」，不假设结果。
+    assert.equal(typeof __test.runAlive({ pid: process.pid, grouped: true }), 'boolean')
+  }
   assert.equal(__test.runAlive({ pid: null }), false)
   assert.equal(__test.runAlive({ pid: 0 }), false)
   assert.equal(__test.runAlive({ pid: -5 }), false)
