@@ -1,0 +1,67 @@
+# CI for @luoshuizhiwei/dsh-desktop-restart
+#
+# 两条流水线：
+#
+# 1. test：每次 push / PR 都跑离线冒烟测试（node scripts/smoke.mjs）。
+#    100 项全过才算绿 —— 2026-10-15 那次「提交说明说加了 10 项测试、仓库里
+#    一项都没有」正是没有 CI 的结果；从这道门起，说加了但没加的东西过不了。
+#
+# 2. publish：推 v* 标签时发布到 npm。用 OIDC Trusted Publishing：
+#    npm 侧登记「这个包归这个仓库」后，GitHub 向 npm 证明身份用的是短命的
+#    OIDC 令牌（每次发布现换现用），本机与仓库里都不存任何 npm 令牌 ——
+#    也就没有「令牌泄露」「三天过期」「发布前 OTP」这些事（2026-10-17~20
+#    反复卡住的就是它们）。
+#
+#    npm 的 Trusted Publishing 现只接受这两个运行环境（2026-10 时点），
+#    因此矩阵固定，不可换 ubuntu-latest 之外的项。
+name: ci
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Run smoke tests
+        run: node scripts/smoke.mjs
+
+  publish:
+    # 只有打标签（v0.3.7 这类）才发布；普通提交只测试。
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # OIDC：向 npm 证明「这次发布来自这个仓库」
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # prepublishOnly（npm test）已在本地之外由 CI 的 test job 把过关，
+      # 这里不再重复跑一遍 —— publish --ignore-scripts 会跳过它。
+      - name: Publish to npm (OIDC trusted publishing)
+        run: npm publish --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: unused-with-provenance   # OIDC 模式下 npm 不读它，占位避免空值告警
+          NPM_CONFIG_PROVENANCE: true
