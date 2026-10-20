@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -551,6 +551,38 @@ await ok('守卫：只有 force=1 才算「已确认」', async () => {
   assert.equal(__test.forceRequested(undefined), false)
 })
 
+await ok('等待：wait=1 / cancelWait=1 参数解析（B 项）', async () => {
+  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart?wait=1'), true)
+  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart?force=1&wait=1'), true)
+  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart?wait=0'), false)
+  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart'), false)
+  assert.equal(__test.waitRequested(undefined), false)
+  assert.equal(__test.cancelWaitRequested('/dsh-desktop-restart/api/restart?cancelWait=1'), true)
+  assert.equal(__test.cancelWaitRequested('/dsh-desktop-restart/api/restart'), false)
+  assert.equal(__test.cancelWaitRequested(undefined), false)
+})
+
+await ok('等待：安静即重启、到顶即放弃、其余继续等（纯函数）', async () => {
+  const since = 1_000_000
+  assert.equal(__test.waitingDecision({ active: false }, since, since + 5_000), 'restart', '守卫安静了就该重启')
+  assert.equal(__test.waitingDecision({ active: true }, since, since + 5_000), 'keep', '还响着就继续等')
+  const max = 60_000
+  assert.equal(__test.waitingDecision({ active: true }, since, since + 59_999, max), 'keep', '差一毫秒也继续等')
+  assert.equal(__test.waitingDecision({ active: true }, since, since + 60_000, max), 'timeout', '到顶必须放弃，不能无限挂起')
+  assert.equal(__test.waitingDecision(null, since, since), 'restart', '形状意外按安静处理')
+  assert.equal(__test.waitingDecision({ active: true }, Number.NaN, since), 'keep', '时间读不出来就继续等')
+})
+
+await ok('平台：非 Windows 在入口说明白，而不是走到一半晦涩失败（C 项）', async () => {
+  assert.equal(__test.platformUnsupported('win32'), null, 'Windows 是支持的平台')
+  for (const platform of ['linux', 'darwin', 'aix']) {
+    const message = __test.platformUnsupported(platform)
+    assert.match(String(message), new RegExp(platform, 'u'), `说明里要带上平台名（${platform}）`)
+    assert.match(String(message), /tasklist/u, '要说清缺的是什么')
+  }
+  assert.equal(__test.platformUnsupported('win32'), null)
+})
+
 await ok('守卫：交接目录只保留最近 20 组（handoff + log 一起清）', async () => {
   const dir = scratch('prune')
   for (let index = 0; index < 25; index += 1) {
@@ -764,15 +796,35 @@ await ok('清理：真删目录，前缀不对的、不是目录的都不动', a
   writeFileSync(asFile, 'x')
   // 把「启动时刻」放到未来、最小年龄放开：两条守卫本身在上面单独验，
   // 这里要验的是「真的会去删、而且只删该删的」。
-  // log 必须留痕：2026-10-20 CI（node 24 / Linux）这条抖过一次 —— removed
-  // 空着，但分不清是「没选中」还是「删除失败」。断言带上完整现场，
-  // 下次抖动从 CI 日志就能直接看出原因，不用再猜。
+  //
+  // 时间戳由测试自己固定注入（2026-10-20 的两轮 CI 教训）：Linux 上
+  // stat().birthtime 常不可用（回退的 ctime 语义也不同），拿真实文件系统
+  // 的时间戳喂判定，等于把「该不该删」挂在平台差异上 —— Windows 全绿、
+  // Linux 随缘。判定逻辑交给上面的纯函数用例；这里用「把 mtime/创建时间
+  // 拨到很久以前」保证目录必然被判为孤儿，然后专心验证「删得掉、删得对」。
+  const LONG_AGO = 1_000_000_000_000
+  const OLD = Date.now() - LONG_AGO
   const logLines = []
   const result = await sweepOrphanSnapshots({
     tempRoot: root,
     startedAtMs: Date.now() + 60_000,
     minAgeMs: 0,
     log: (line) => logLines.push(line),
+    // 注入时间戳来源：测试专用钩子，生产路径不传它。字段名与 node:fs 的
+    // stat() 保持一致（birthtimeMs / ctimeMs / mtimeMs）。
+    statOf: (target) => {
+      const info = statSync(target)
+      const isSnapshot = target.includes(SNAPSHOT_PREFIX)
+      // 快照目录一律「很久以前建的、很久没写过」→ 必然命中孤儿；
+      // 无关目录与文件同样给旧值，靠前缀/类型把它们挡在门外。
+      const old = isSnapshot ? OLD : info.birthtimeMs
+      return {
+        isDirectory: () => info.isDirectory(),
+        birthtimeMs: old,
+        ctimeMs: old,
+        mtimeMs: isSnapshot ? OLD : info.mtimeMs,
+      }
+    },
   })
   const scene = () => JSON.stringify({ scanned: result.scanned, removed: result.removed, failed: result.failed, logLines })
   assert.deepEqual(result.removed, [`${SNAPSHOT_PREFIX}doomed`], `删除结果不符：${scene()}`)
@@ -939,6 +991,35 @@ await ok('client bundle：确认态与警告态是两条不同的路（force 只
   assert.match(source, /\?force=1/u, '强制重启必须带 ?force=1')
   assert.match(source, /WARN_ARM_MS/u, '警告态必须有防连点冷却')
   assert.match(source, /result\.guard === true/u, '必须识别宿主半的守卫响应')
+})
+
+await ok('client bundle：等空闲再重启 —— wait/cancelWait 走通、按钮只在守卫响着时出现（B 项）', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  assert.match(source, /wait=1/u, '等待请求必须带 wait=1')
+  assert.match(source, /cancelWait=1/u, '取消请求必须带 cancelWait=1')
+  assert.match(source, /function WaitButton/u, '必须有等待按钮组件')
+  // 按钮出现条件：守卫响着（guardHint 非空）或已挂起等待；非桌面版不出现。
+  const start = source.indexOf('function WaitButton')
+  const fn = source.slice(start, source.indexOf('\n\t\t\t}', start) + 4)
+  assert.ok(fn.length > 200, `WaitButton 函数体要完整截取到（现在 ${String(fn.length)} 字符）`)
+  assert.match(fn, /guardHint === ""/u, '要判断守卫是否响着')
+  assert.match(fn, /desktop === false.*?return null/us, '非桌面版不显示')
+  // 等待与取消都换状态行而不进 done（等待不是「已排程重启」）。
+  assert.match(source, /result\.waiting === true/u, '客户端要识别宿主的等待挂起响应')
+  assert.match(source, /waitForIdle/u, 'useRestart 必须暴露 waitForIdle')
+  assert.match(source, /cancelWait/u, 'useRestart 必须暴露 cancelWait')
+})
+
+await ok('client bundle：守卫提示由结构化计数按语言组句（E 项）', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  assert.match(source, /function guardHintOf/u, '必须有组句函数')
+  const start = source.indexOf('function guardHintOf')
+  const fn = source.slice(start, source.indexOf('\n\t\t}', start) + 3)
+  assert.ok(fn.length > 300, `guardHintOf 函数体要完整截取到（现在 ${String(fn.length)} 字符）`)
+  // 有计数用计数组句；没有计数才退回宿主 reasons（宁可中文原文也不编话）。
+  assert.match(fn, /tasks\.turns/u, '要用宿主给的结构化计数（turns）')
+  assert.match(fn, /installs\.running/u, '要用宿主给的结构化计数（installs）')
+  assert.match(fn, /guard\.reasons.*join/us, '没有计数时退回宿主原句')
 })
 
 await ok('client bundle：安装中的硬拦不弹「仍要重启」，也不说「仍可重启」', async () => {
