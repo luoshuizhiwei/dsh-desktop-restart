@@ -36,11 +36,29 @@ const require = createRequire(import.meta.url)
 const helper = require(helperPath)
 
 let passed = 0
+let skippedWindowsOnly = 0
 /** 跑一个断言块并计数。 */
 async function ok(name, fn) {
   await fn()
   passed += 1
   console.log('  ok   ' + name)
+}
+
+/**
+ * 只在 Windows 上跑的用例：helper 的 tasklist / taskkill / where.exe /
+ * netstat **实测**依赖 Windows 命令，别的平台上那条代码路径本来就不同
+ * （CI 首跑 Linux 时它们全红，2026-10-20）。跳过要如实计数 —— 文档数量
+ * 校验（文件末尾那条）靠它对账，不能悄悄少跑。
+ * @param {string} name - 用例名。
+ * @param {() => unknown} fn - 断言块。
+ */
+async function okWindows(name, fn) {
+  if (process.platform !== 'win32') {
+    skippedWindowsOnly += 1
+    console.log('  skip ' + name + '（仅 Windows）')
+    return
+  }
+  await ok(name, fn)
 }
 
 /**
@@ -1319,7 +1337,7 @@ await ok('helper：handoff 文件不存在时以退出码 1 结束', async () =>
   assert.equal(result.status, 1)
 })
 
-await ok('helper：目标映像名不符时拒绝，且不启动任何进程', async () => {
+await okWindows('helper：目标映像名不符时拒绝，且不启动任何进程', async () => {
   const dir = scratch('smoke')
   const logPath = join(dir, 'helper.log')
   const handoffPath = join(dir, 'handoff.json')
@@ -1341,7 +1359,7 @@ await ok('helper：目标映像名不符时拒绝，且不启动任何进程', a
   assert.doesNotMatch(log, /relaunched/u, 'helper 不应启动任何进程')
 })
 
-await ok('helper：新实例立刻退出时会重试，试完如实认输且不谎报成功', () => {
+await okWindows('helper：新实例立刻退出时会重试，试完如实认输且不谎报成功', () => {
   const dir = scratch('relaunch')
   const logPath = join(dir, 'helper.log')
   const handoffPath = join(dir, 'handoff.json')
@@ -1416,7 +1434,7 @@ await ok('helper：兜底清理只认同一个可执行文件，且跳过 host /
   assert.deepEqual(helper.leftoverPids(null, exe), [])
 })
 
-await ok('helper：端口迟迟不放时先清残留，最后才单独结束 host', async () => {
+await okWindows('helper：端口迟迟不放时先清残留，最后才单独结束 host', async () => {
   // 占住一个端口，模拟「主进程已经没了，host 还攥着监听不放」。
   const server = net.createServer()
   await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve) })
@@ -1479,7 +1497,7 @@ await ok('helper：端口迟迟不放时先清残留，最后才单独结束 hos
   }
 })
 
-await ok('helper：问不出进程表时不当成「主进程已经没了」', async () => {
+await okWindows('helper：问不出进程表时不当成「主进程已经没了」', async () => {
   // 把 PATH 指到一个空目录：tasklist / taskkill / powershell 全都调不到，
   // 正好模拟「进程表读不出来」。helper 必须照样结束主进程，而不是以为它已经没了。
   const emptyPath = scratch('nopath')
@@ -1551,11 +1569,23 @@ await ok('文档：README 里写的冒烟测试数量与实际一致', async () 
   // 这条挡的是「加了测试却忘了改文档」—— 也顺带挡住反过来的「文档说加了、其实没加」
   // 那种曾经出现过的情况（2026-10-15：提交说明写着新增 10 项，仓库里一项都没有）。
   const readme = readFileSync(join(libDir, '..', 'README.md'), 'utf8')
-  const claimed = /离线冒烟测试（(\d+) 项）/u.exec(readme)
-  assert.ok(claimed, 'README 必须写明冒烟测试的数量')
-  // 这一条自己也占一项，所以用 passed + 1 来比。
-  assert.equal(Number(claimed[1]), passed + 1, 'README 写的数量与实际不符：加了测试就要同步改文档')
+  const claimed = /离线冒烟测试（(\d+) 项，其中 (\d+) 项仅 Windows）/u.exec(readme)
+  assert.ok(claimed, 'README 必须写明「总数 + 其中仅 Windows 的数量」')
+  const total = Number(claimed[1])
+  const windowsOnly = Number(claimed[2])
+  // 这一条自己也占一项；仅 Windows 的用例在本平台跳过时不计入。
+  const expectedHere = total - (process.platform === 'win32' ? 0 : windowsOnly)
+  assert.equal(passed + 1, expectedHere, 'README 写的数量与本平台实际不符：加了测试就要同步改文档')
+  // 「仅 Windows」的声明也要对账 —— 非 Windows 平台上真能数出来；Windows 上
+  // 跑不到这条对账（skipped 恒为 0），由 CI 的 Linux 三档代为核对。
+  if (process.platform !== 'win32') {
+    assert.equal(skippedWindowsOnly, windowsOnly, 'README 声明的「仅 Windows」数量与实际跳过的用例数不符')
+  }
 })
 
 console.log('')
-console.log('all ' + String(passed) + ' checks passed')
+if (skippedWindowsOnly > 0) {
+  console.log('all ' + String(passed) + ' checks passed (' + String(skippedWindowsOnly) + ' skipped: Windows-only)')
+} else {
+  console.log('all ' + String(passed) + ' checks passed')
+}
