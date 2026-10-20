@@ -764,16 +764,21 @@ await ok('清理：真删目录，前缀不对的、不是目录的都不动', a
   writeFileSync(asFile, 'x')
   // 把「启动时刻」放到未来、最小年龄放开：两条守卫本身在上面单独验，
   // 这里要验的是「真的会去删、而且只删该删的」。
+  // log 必须留痕：2026-10-20 CI（node 24 / Linux）这条抖过一次 —— removed
+  // 空着，但分不清是「没选中」还是「删除失败」。断言带上完整现场，
+  // 下次抖动从 CI 日志就能直接看出原因，不用再猜。
+  const logLines = []
   const result = await sweepOrphanSnapshots({
     tempRoot: root,
     startedAtMs: Date.now() + 60_000,
     minAgeMs: 0,
-    log: () => {},
+    log: (line) => logLines.push(line),
   })
-  assert.deepEqual(result.removed, [`${SNAPSHOT_PREFIX}doomed`])
-  assert.equal(result.failed.length, 0)
-  assert.equal(result.bytes, 2048, '应当统计出释放的字节数')
-  assert.equal(result.files, 1)
+  const scene = () => JSON.stringify({ scanned: result.scanned, removed: result.removed, failed: result.failed, logLines })
+  assert.deepEqual(result.removed, [`${SNAPSHOT_PREFIX}doomed`], `删除结果不符：${scene()}`)
+  assert.equal(result.failed.length, 0, `有目录删失败：${scene()}`)
+  assert.equal(result.bytes, 2048, `字节数不符：${scene()}`)
+  assert.equal(result.files, 1, `文件数不符：${scene()}`)
   assert.equal(existsSync(doomed), false, '该删的必须删掉')
   assert.equal(existsSync(unrelated), true, '不是快照前缀的目录一个都不该碰')
   assert.equal(existsSync(asFile), true, '同前缀的文件不动')
