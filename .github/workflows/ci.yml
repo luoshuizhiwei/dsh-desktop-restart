@@ -55,13 +55,17 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
-      # prepublishOnly（npm test）已在本地之外由 CI 的 test job 把过关，
+      # OIDC 需要 npm ≥ 11.5.1 与 Node ≥ 22.14（官方文档的要求）。
+      # Node 24 自带的 npm 已满足；显式升到 latest 是保险，别让人猜捆绑版本。
+      - name: Ensure npm supports OIDC (>= 11.5.1)
+        run: npm install -g npm@latest
+
+      # prepublishOnly（npm test）已由 CI 的 test job 三档矩阵把关，
       # 这里不再重复跑一遍 —— publish --ignore-scripts 会跳过它。
+      # 不设 NODE_AUTH_TOKEN：npm ≥ 11.5.1 检测到 GitHub OIDC 环境会
+      # 优先走短命令牌，占位反而多一种失败形态。
       - name: Publish to npm (OIDC trusted publishing)
         run: npm publish --ignore-scripts
-        env:
-          NODE_AUTH_TOKEN: unused-with-provenance   # OIDC 模式下 npm 不读它，占位避免空值告警
-          NPM_CONFIG_PROVENANCE: true

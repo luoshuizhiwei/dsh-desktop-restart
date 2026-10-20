@@ -247,6 +247,15 @@ node scripts/smoke.mjs
 
 离线冒烟测试（100 项）：宿主半用桩上下文加载，只验证路由守卫与全部拒绝路径；守卫的判据（任务快照、安装记录、进程存活、平台鉴权判定、拒绝文案、路径过滤、命令行分词、netstat 监听解析）是纯函数，直接单测；孤儿快照的判定是纯函数（含「启动后才建」「启动后被写过」「太年轻」三个反例），删除本身在临时目录里真跑一遍；客户端那半校验包身份、注入写法、尺寸与配色对齐官方、颜色语义与无障碍属性；helper 走「映像名不匹配」「拉起来又立刻退出」「问不出进程表」「端口迟迟不放」四条分支（最后一条用测试自己拉起的替身进程当 host、自己占住的端口当被占端口，且 `alertOnFailure: false` 不弹窗）。**它不会重启任何东西**，也不会碰真实的系统 Temp（清理相关的用例都把 `TMP`/`TEMP` 与 `DSH_HOME` 指向本次测试的临时目录），自己建的临时目录还会在退出时删干净（2026-10-09 之前每跑一次就往系统 Temp 里留 5 个空目录）。
 
+## 发布
+
+发布走 CI 自动化（`.github/workflows/ci.yml`），**本机不存任何 npm 凭据**：
+
+1. 普通提交 → CI 在 node 20/22/24 三档跑全部冒烟测试；
+2. 打 `v*` 标签并推送 → 三档测试通过后，publish 任务用 **OIDC Trusted Publishing** 直接发布到 npm（npm ≥ 11.5.1，无需令牌、无 OTP），公共仓库自动附带 provenance 溯源。
+
+一次性登记（已完成于 2026-10-20）：npmjs.com → 本包 → Settings → **Trusted Publisher** → GitHub Actions，填 owner `luoshuizhiwei`、repo `dsh-desktop-restart`、workflow `ci.yml`，**Allowed actions 勾上 `npm publish`**（默认只放行 staged publish，不勾的话直接发布会被拒）。注意两点（官方文档）：登记后 **2 天内**必须完成第一次成功发布，否则配置作废要重登；npm 保存时不校验表单，字段大小写必须与仓库完全一致。
+
 ## 许可证
 
 MIT
