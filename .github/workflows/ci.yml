@@ -94,11 +94,22 @@ jobs:
         run: |
           # 正文用**标签注解**，不用 --generate-notes：本仓库直接提交到 master、
           # 几乎不建 PR，GitHub 自动生成的说明只有一行 Full Changelog（实测
-          # v0.4.3 就是这样，等于没有说明）。我们打标签时的注解本身就是一份
-          # 中文变更摘要，正好当 Release 正文。
+          # v0.4.3 就是这样，等于没有说明）。
+          #
+          # 注解必须经 **API** 读（2026-10-20 v0.4.4 实测踩过）：actions/checkout
+          # 检出 tag 时没取注解对象，本地那个 tag 变成轻量标签，
+          # `git for-each-ref %(contents)` 会静默回落到**提交信息** —— 于是
+          # Release 正文变成了最后一条 commit 的内容。
           tag="$GITHUB_REF_NAME"
           prev="$(git describe --tags --abbrev=0 "${tag}^")"
-          note="$(git for-each-ref --format='%(contents)' "refs/tags/${tag}")"
+          kind="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq .object.type)"
+          if [ "$kind" = "tag" ]; then
+            object="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq .object.sha)"
+            note="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object}" --jq .message)"
+          else
+            # 轻量标签没有注解，退回提交标题（总比空白好）。
+            note="$(git log -1 --pretty=%s)"
+          fi
           {
             printf '%s\n\n' "$note"
             printf '**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$GITHUB_REPOSITORY" "$prev" "$tag"
