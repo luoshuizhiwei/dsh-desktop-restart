@@ -54,6 +54,17 @@ The criterion is **whether the process is alive**, not whether the record file e
 - process gone → treat as crash leftover, **don't block** (the recorded pid is still reported for diagnosis);
 - no readable pid (truncated file, changed format) → can't tell, **warn only**, `force` allowed — better to ask twice than to guess.
 
+## After a restart: receipt and resume (2026-10-21)
+
+A restart interrupts in-flight turns. Following the approach of a peer plugin (`dsh-smart-restart`), this plugin adds two pieces of aftercare:
+
+- **Restart receipt**: before scheduling, it writes a marker (`~/.dsh/desktop-restart/last-restart.json`) holding the host pid, the time, and **which sessions were doing work**. A new host that sees a different pid knows it is a genuine restart and shows "Restarted at HH:MM:SS (down Ns)" in the main-area panel and on the settings row. (The same pid means an in-process plugin reload — no false receipt, and no session is disturbed.)
+- **Automatic resume of interrupted sessions**: same criterion as the guards — sessions with a running turn or queued inbox messages. Twelve seconds after boot each of them receives a user message: "Restart finished: the desktop app restarted at … (down ~Ns). If a task was interrupted, continue from where it stopped." Default is `wake` (`agent.followup`, so the session really continues); `config.resume: 'notice'` only puts it in context without starting a turn; `'off'` disables it. At most 8 sessions per restart.
+
+Both depend on the official `createUserMessage` (`@deepseek-ai/dsh-llm`) and `SessionId` (`@deepseek-ai/dsh-session`). Those resolve on machines with the **dsh CLI** installed but not necessarily on desktop-only installs, so they are loaded **lazily at runtime**: when unavailable, resume is skipped with a log line and everything else keeps working — a missing package never breaks loading. The receipt does not depend on them and always shows.
+
+Before launching the replacement instance the helper also strips three traces of the previous process (`DSH_SESSION_ID` / `DSH_WEB_URL` / `DSH_SHELL`) while keeping the **installation identity** (`DSH_HOME` / `DSH_PROFILE` / `DSH_PROFILE_DIR`). Otherwise the new instance inherits a **dead port address**.
+
 ## Install
 
 ### From npm
@@ -242,7 +253,7 @@ failure notice dispatched to the user
 node scripts/smoke.mjs
 ```
 
-Offline smoke tests (112 checks, 4 of them Windows-only): the host half loads with a stub context, verifying route guards and every refusal path; guard criteria (task snapshots, install records, process liveness, platform-auth verdicts, refusal copy, path filters, command-line tokenizing, netstat listener parsing) are pure functions tested directly; the orphan-snapshot rule is a pure function (with the "created after start" / "written after start" / "too young" counterexamples) while the deletion itself runs for real in a temp directory; the client half checks bundle identity, injection style, measure-for-measure alignment with official UI, color semantics, and accessibility attributes; the helper exercises the "image name mismatch", "relaunch dies immediately", "process table unreadable", and "port won't free" branches (these four depend on tasklist / taskkill / where.exe and **run on Windows only** — CI's Linux/macOS skips and counts them; all other pure-function checks run on all three platforms — the first CI run on Linux caught an assertion that had hard-coded Windows behavior as universal). **The suite never restarts anything**, never touches the real system Temp (sweep cases point `TMP`/`TEMP` and `DSH_HOME` at test-local directories), and cleans up after itself.
+Offline smoke tests (116 checks, 4 of them Windows-only): the host half loads with a stub context, verifying route guards and every refusal path; guard criteria (task snapshots, install records, process liveness, platform-auth verdicts, refusal copy, path filters, command-line tokenizing, netstat listener parsing) are pure functions tested directly; the orphan-snapshot rule is a pure function (with the "created after start" / "written after start" / "too young" counterexamples) while the deletion itself runs for real in a temp directory; the client half checks bundle identity, injection style, measure-for-measure alignment with official UI, color semantics, and accessibility attributes; the helper exercises the "image name mismatch", "relaunch dies immediately", "process table unreadable", and "port won't free" branches (these four depend on tasklist / taskkill / where.exe and **run on Windows only** — CI's Linux/macOS skips and counts them; all other pure-function checks run on all three platforms — the first CI run on Linux caught an assertion that had hard-coded Windows behavior as universal). **The suite never restarts anything**, never touches the real system Temp (sweep cases point `TMP`/`TEMP` and `DSH_HOME` at test-local directories), and cleans up after itself.
 
 ## Language
 

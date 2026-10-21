@@ -573,6 +573,46 @@ await ok('等待：安静即重启、到顶即放弃、其余继续等（纯函�
   assert.equal(__test.waitingDecision({ active: true }, Number.NaN, since), 'keep', '时间读不出来就继续等')
 })
 
+await ok('重启回执：pid 相同不算重启，变了才算，会话数有上限（2026-10-21）', async () => {
+  const at = new Date(1_700_000_000_000).toISOString()
+  // 没有标记 / 形状不对 → 不是重启
+  assert.equal(__test.restartReceipt(null, 100, 1_700_000_060_000), null, '没有标记就不是重启')
+  assert.equal(__test.restartReceipt({}, 100, Date.now()), null, '没有 at 就不是重启')
+  assert.equal(__test.restartReceipt({ at: '不是时间', hostPid: 1 }, 100, Date.now()), null, 'at 读不出来就不猜')
+  // 同一个 pid：插件热重载/同进程重载 —— 既不算重启，也不续跑
+  assert.equal(__test.restartReceipt({ at, hostPid: 100 }, 100, 1_700_000_060_000), null, 'pid 没变就不是重启')
+  // pid 变了 → 回执，停机时间按 at 算
+  const receipt = __test.restartReceipt({ at, hostPid: 100, sessions: ['a', 'b', ''] }, 200, 1_700_000_060_000)
+  assert.ok(receipt !== null, 'pid 变了就是重启')
+  assert.equal(receipt.downtimeMs, 60_000, '停机时间 = 现在 - 标记时间')
+  assert.deepEqual(receipt.sessions, ['a', 'b'], '空会话 id 要滤掉')
+  // 会话数上限：一次重启不该唤醒一大片
+  const many = Array.from({ length: 20 }, (_, i) => `s${String(i)}`)
+  const capped = __test.restartReceipt({ at, hostPid: 1, sessions: many }, 2, 1_700_000_060_000)
+  assert.equal(capped.sessions.length, 8, '最多 8 个会话')
+})
+
+await ok('重启回执：只挑「正在干活」的会话（判据与守卫一致）', async () => {
+  const agents = {
+    list: () => [
+      { id: 'running-one', status: 'running', inbox: { nextTurn: [], nextStep: [] } },
+      { id: 'queued-one', status: 'idle', inbox: { nextTurn: [1], nextStep: [] } },
+      { id: 'queued-step', status: 'idle', inbox: { nextTurn: [], nextStep: [1, 2] } },
+      { id: 'idle-one', status: 'idle', inbox: { nextTurn: [], nextStep: [] } },
+      { id: '', status: 'running' },
+      { status: 'running' },
+    ],
+  }
+  assert.deepEqual(
+    __test.busySessionsOf(agents),
+    ['running-one', 'queued-one', 'queued-step'],
+    '正在跑或有排队的才算「被打断」，空闲会话不打扰',
+  )
+  assert.deepEqual(__test.busySessionsOf(undefined), [], '拿不到 agents 服务就返回空（绝不猜）')
+  assert.deepEqual(__test.busySessionsOf({ list: () => null }), [], 'list 形状意外也返回空')
+  assert.deepEqual(__test.busySessionsOf({ list: () => { throw new Error('boom') } }), [], '抛错也返回空')
+})
+
 await ok('平台：非 Windows 在入口说明白，而不是走到一半晦涩失败（C 项）', async () => {
   assert.equal(__test.platformUnsupported('win32'), null, 'Windows 是支持的平台')
   for (const platform of ['linux', 'darwin', 'aix']) {
@@ -1274,6 +1314,19 @@ await ok('client bundle：主区面板按同座位（任务看板）的页面版
   assert.match(source, /const guardWarn = action\.guardHint === ""/u, '守卫提示要单独成一块')
 })
 
+await ok('client bundle：重启完成回执接进界面（2026-10-21）', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  // 宿主在状态里给 lastRestart；客户端要读它、要有一句话、要显示出来。
+  assert.match(source, /lastRestart: body\.lastRestart !== null/u, '要读宿主给的回执')
+  assert.match(source, /function restartReceiptText/u, '要有回执文案函数')
+  assert.match(source, /restartReceipt: "已于 \{time\} 完成重启/u, '中文文案在字典里')
+  assert.match(source, /restart, armed, press, refresh, waitForIdle, cancelWait/u, 'useRestart 要 expose restart')
+  // 主区面板里显示一行
+  assert.match(source, /action\.restart !== null && React\.createElement\("p", \{ className: "dshdr-panel-note" \}, restartReceiptText/u, '面板要显示回执行')
+  // 设置行：没有别的提示时优先显示回执，而不是干巴巴的默认说明
+  assert.match(source, /action\.restart !== null \? restartReceiptText\(action\.restart\) : t\(DEFAULT_HINT_KEY\)/u, '设置行优先显示回执')
+})
+
 await ok('client bundle：图标优先用官方 IconRefreshOutlineRegular，兜底也是 16 格描边', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   assert.match(source, /UI\.IconRefreshOutlineRegular/u, '官方图标集里有现成的刷新图标，优先用它')
@@ -1745,7 +1798,37 @@ await ok('helper：把主进程的启动参数原样带回（引号与空格）'
   assert.equal(helper.relaunchArgsFrom('', exe), null)
   assert.equal(helper.relaunchArgsFrom(undefined, exe), null)
 })
-
+await ok('helper：拉起新实例前清掉上一次进程的痕迹，保留安装身份（2026-10-21）', async () => {
+  // 借鉴 dsh-restart-desktop：只清 Node 模式变量是不够的 —— 新实例会继承
+  // 上个进程的会话 id、已经没人听的旧端口、以及「我跑在 DSH shell 里」的假标记。
+  const cleaned = helper.launchEnvFrom({
+    ELECTRON_RUN_AS_NODE: '1',
+    DSH_DESKTOP_NODE_EXECUTABLE: 'C:\\x\\node.exe',
+    DSH_SESSION_ID: 'session-old',
+    DSH_WEB_URL: 'http://127.0.0.1:1411',
+    DSH_SHELL: '1',
+    DSH_HOME: 'C:\\Users\\u\\.dsh',
+    DSH_PROFILE: 'desktop',
+    DSH_PROFILE_DIR: 'C:\\Users\\u\\.dsh\\profiles\\desktop',
+    PATH: 'C:\\Windows',
+  })
+  for (const gone of ['ELECTRON_RUN_AS_NODE', 'DSH_DESKTOP_NODE_EXECUTABLE', 'DSH_SESSION_ID', 'DSH_WEB_URL', 'DSH_SHELL']) {
+    assert.equal(Object.prototype.hasOwnProperty.call(cleaned, gone), false, `必须清掉 ${gone}`)
+  }
+  // 安装身份必须留着：否则新实例会跑去用默认 profile
+  assert.equal(cleaned.DSH_HOME, 'C:\\Users\\u\\.dsh', 'DSH_HOME 要留着')
+  assert.equal(cleaned.DSH_PROFILE, 'desktop', 'DSH_PROFILE 要留着')
+  assert.equal(cleaned.DSH_PROFILE_DIR, 'C:\\Users\\u\\.dsh\\profiles\\desktop', 'DSH_PROFILE_DIR 要留着')
+  assert.equal(cleaned.PATH, 'C:\\Windows', '无关变量原样带过')
+  // 大小写不敏感（Windows 环境变量本就不分大小写）
+  const lower = helper.launchEnvFrom({ dsh_shell: '1', dsh_home: 'C:\\h' })
+  assert.equal(Object.prototype.hasOwnProperty.call(lower, 'dsh_shell'), false, '小写写法的 DSH_SHELL 也要清')
+  assert.equal(lower.dsh_home, 'C:\\h', '小写写法的 DSH_HOME 要留着')
+  // 不修改入参（纯函数）
+  const source = { DSH_SHELL: '1' }
+  helper.launchEnvFrom(source)
+  assert.equal(source.DSH_SHELL, '1', '不能改动调用方给的对象')
+})
 await ok('helper：兜底清理只认同一个可执行文件，且跳过 host / 主进程 / 自己', async () => {
   const exe = 'C:\\Program Files\\DSH\\DeepSeek Harness.exe'
   const processes = [
