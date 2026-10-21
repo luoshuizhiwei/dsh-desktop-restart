@@ -174,11 +174,19 @@ const restartRoute = routes.get('/dsh-desktop-restart/api/restart')
 const sweepRoute = routes.get('/dsh-desktop-restart/api/sweep')
 const { __test } = hostHalf
 
-await ok('注册了状态、重启与清理设置三条路由', async () => {
+await ok('注册了状态、重启、清理与设置四条路由', async () => {
   assert.ok(statusRoute, '缺少状态路由')
   assert.ok(restartRoute, '缺少重启路由')
   assert.ok(routes.get('/dsh-desktop-restart/api/sweep'), '缺少清理设置路由')
-  assert.equal(routes.size, 3)
+  // 2026-10-21：清理与「重启后自动续跑」共用同一个处理器，两条路径都注册 ——
+  // prefs 是新名字，sweep 留给已经装在用户机器上的老客户端。
+  assert.ok(routes.get('/dsh-desktop-restart/api/prefs'), '缺少设置路由（prefs）')
+  assert.equal(routes.size, 4)
+  assert.equal(
+    routes.get('/dsh-desktop-restart/api/sweep').handler,
+    routes.get('/dsh-desktop-restart/api/prefs').handler,
+    '两条路径必须指向同一个处理器（不能各写一份，否则守卫会漏一处）',
+  )
 })
 
 await ok('host 半声明 webServer 依赖', async () => {
@@ -955,6 +963,53 @@ await ok('清理：设置文件里没有这一项时，默认值来自 config', 
   assert.equal(JSON.parse(onRes.body).sweep.enabled, true, 'config.sweep=true → 开启')
 })
 
+await ok('重启后续跑：默认关闭，config/设置都能打开，认不出的值一律关（2026-10-21）', async () => {
+  const settingsFile = join(String(process.env.DSH_HOME), 'desktop-restart', 'settings.json')
+  rmSync(settingsFile, { force: true })
+  const statusOf = (config) => {
+    const probe = new Map()
+    hostHalf.apply({
+      effect: (fn) => { fn() },
+      webServer: { port: 19387, register: (spec) => { probe.set(spec.path, spec); return () => {} } },
+      logger: () => ({ info() {}, warn() {}, error() {} }),
+      inject: () => {},
+    }, { command: false, ...config })
+    const res = makeRes()
+    probe.get('/dsh-desktop-restart/api/status').handler(makeReq('GET'), res)
+    return JSON.parse(res.body)
+  }
+  // ① 新用户（没 config、没设置文件）→ 关：续跑会花 token，必须自己开
+  assert.equal(statusOf({}).resume, 'off', '默认必须是 off')
+  // ② config 给默认值 → 生效
+  assert.equal(statusOf({ resume: 'wake' }).resume, 'wake', 'config.resume=wake 生效')
+  assert.equal(statusOf({ resume: 'notice' }).resume, 'notice', 'config.resume=notice 生效')
+  // ③ 认不出的值 → 关（宁可不动，也不猜）
+  assert.equal(statusOf({ resume: 'yes' }).resume, 'off', '认不出的值按 off')
+  // ④ 用户在设置里点开的 → 优先于 config
+  __test.writeSettings({ resume: 'wake' }, settingsFile)
+  assert.equal(statusOf({ resume: 'notice' }).resume, 'wake', '用户点过的值优先')
+  rmSync(settingsFile, { force: true })
+})
+
+await ok('设置路由：resume 开关能写能读，且走同一套守卫', async () => {
+  const settingsFile = join(String(process.env.DSH_HOME), 'desktop-restart', 'settings.json')
+  const prefs = routes.get('/dsh-desktop-restart/api/prefs')
+  assert.ok(prefs, '缺 prefs 路由')
+  const on = makeRes()
+  await prefs.handler(makeReq('POST', { url: '/dsh-desktop-restart/api/prefs?resume=wake' }), on)
+  assert.equal(JSON.parse(on.body).resume, 'wake', '打开后回 wake')
+  assert.equal(__test.readSettings(settingsFile).resume, 'wake', '要落到 settings.json（宿主侧说了算）')
+  const off = makeRes()
+  await prefs.handler(makeReq('POST', { url: '/dsh-desktop-restart/api/prefs?resume=off' }), off)
+  assert.equal(JSON.parse(off.body).resume, 'off', '关掉后回 off')
+  // 非法值不写
+  const bad = makeRes()
+  await prefs.handler(makeReq('POST', { url: '/dsh-desktop-restart/api/prefs?resume=always' }), bad)
+  assert.equal(JSON.parse(bad.body).resume, 'off', '非法值不该被接受')
+  assert.equal(__test.readSettings(settingsFile).resume, 'off', 'settings.json 不该被非法值覆盖')
+  rmSync(settingsFile, { force: true })
+})
+
 await ok('清理设置路由：非 POST 返回 405', async () => {
   const res = makeRes()
   await sweepRoute.handler(makeReq('GET'), res)
@@ -1325,6 +1380,17 @@ await ok('client bundle：重启完成回执接进界面（2026-10-21）', async
   assert.match(source, /action\.restart !== null && React\.createElement\("p", \{ className: "dshdr-panel-note" \}, restartReceiptText/u, '面板要显示回执行')
   // 设置行：没有别的提示时优先显示回执，而不是干巴巴的默认说明
   assert.match(source, /action\.restart !== null \? restartReceiptText\(action\.restart\) : t\(DEFAULT_HINT_KEY\)/u, '设置行优先显示回执')
+})
+
+await ok('client bundle：续跑开关在设置里，默认关、写明会花 token（2026-10-21）', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  assert.match(source, /function ResumeRow/u, '要有续跑开关那一行')
+  assert.match(source, /React\.createElement\(ResumeRow\)/u, '要挂进设置分区')
+  assert.match(source, /PREFS_ROUTE \+ \(on \? "\?resume=wake" : "\?resume=off"\)/u, '拨动要写宿主设置')
+  assert.match(source, /resumeHint: "注意：会额外消耗 token/u, '必须在说明里写明会花 token')
+  assert.match(source, /mode === null \? t\("sweepReading"\)/u, '没读到之前不要假装是关')
+  // 默认值来自宿主：客户端不许自己编（编错了就会与宿主不一致）
+  assert.match(source, /resume: typeof body\.resume === "string"/u, '模式只认宿主给的')
 })
 
 await ok('client bundle：图标优先用官方 IconRefreshOutlineRegular，兜底也是 16 格描边', async () => {
