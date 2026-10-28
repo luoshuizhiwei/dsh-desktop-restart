@@ -1,10 +1,8 @@
 # CI for @luoshuizhiwei/dsh-desktop-restart
 #
-# 两条流水线：
+# 测试、npm 发布与 GitHub Release 三个阶段。
 #
-# 1. test：每次 push / PR 都跑离线冒烟测试（node scripts/smoke.mjs）。
-#    100 项全过才算绿 —— 2026-10-15 那次「提交说明说加了 10 项测试、仓库里
-#    一项都没有」正是没有 CI 的结果；从这道门起，说加了但没加的东西过不了。
+# 1. test：每次 push / PR 跑完整离线检查；Windows 同时覆盖进程相关分支。
 #
 # 2. publish：推 v* 标签时发布到 npm。用 OIDC Trusted Publishing：
 #    npm 侧登记「这个包归这个仓库」后，GitHub 向 npm 证明身份用的是短命的
@@ -12,8 +10,7 @@
 #    也就没有「令牌泄露」「三天过期」「发布前 OTP」这些事（2026-10-17~20
 #    反复卡住的就是它们）。
 #
-#    npm 的 Trusted Publishing 现只接受这两个运行环境（2026-10 时点），
-#    因此矩阵固定，不可换 ubuntu-latest 之外的项。
+#    发布任务使用 ubuntu-latest；测试矩阵与发布运行环境分别配置。
 #
 # 3. release：npm 发布成功后，给同一个标签建 GitHub Release（自动生成变更
 #    说明）。**tag 只是提交上的书签，Releases 页读的是 Release 对象** ——
@@ -32,11 +29,15 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         node: [20, 22, 24]
+        include:
+          - os: windows-latest
+            node: 24
     steps:
       - uses: actions/checkout@v4
 
@@ -44,8 +45,8 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      - name: Run smoke tests
-        run: node scripts/smoke.mjs
+      - name: Run offline tests
+        run: npm test
 
   publish:
     # 只有打标签（v0.3.7 这类）才发布；普通提交只测试。
@@ -62,6 +63,9 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+
+      - name: Verify release tag matches package version
+        run: node -e 'const p = require("./package.json"); const expected = "v" + p.version; if (process.env.GITHUB_REF_NAME !== expected) { console.error("Expected tag " + expected + ", got " + process.env.GITHUB_REF_NAME); process.exit(1); }'
 
       # OIDC 需要 npm ≥ 11.5.1 与 Node ≥ 22.14（官方文档的要求）。
       # Node 24 自带的 npm 已满足；显式升到 latest 是保险，别让人猜捆绑版本。

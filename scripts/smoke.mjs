@@ -563,8 +563,11 @@ await ok('等待：wait=1 / cancelWait=1 参数解析（B 项）', async () => {
   assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart?wait=1'), true)
   assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart?force=1&wait=1'), true)
   assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart?wait=0'), false)
-  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart'), false)
-  assert.equal(__test.waitRequested(undefined), false)
+  // 2026-10-22：默认改为「先等空闲」，只有 now=1 才跳过
+  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart'), true, '默认必须等待空闲')
+  assert.equal(__test.waitRequested(undefined), true, '没有 URL 也按默认等待')
+  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart?now=1'), false, 'now=1 才立即执行')
+  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart?force=1'), true, 'force 不等于跳过等待')
   assert.equal(__test.cancelWaitRequested('/dsh-desktop-restart/api/restart?cancelWait=1'), true)
   assert.equal(__test.cancelWaitRequested('/dsh-desktop-restart/api/restart'), false)
   assert.equal(__test.cancelWaitRequested(undefined), false)
@@ -572,6 +575,8 @@ await ok('等待：wait=1 / cancelWait=1 参数解析（B 项）', async () => {
 
 await ok('等待：安静即重启、到顶即放弃、其余继续等（纯函数）', async () => {
   const since = 1_000_000
+  // F3（2026-10-23）：总期限优先于“现在是否空闲”
+  assert.equal(__test.waitingDecision({ active: false }, 0, 30 * 60 * 1000 + 1), 'timeout', '超期必须优先于空闲')
   assert.equal(__test.waitingDecision({ active: false }, since, since + 5_000), 'restart', '守卫安静了就该重启')
   assert.equal(__test.waitingDecision({ active: true }, since, since + 5_000), 'keep', '还响着就继续等')
   const max = 60_000
@@ -581,44 +586,19 @@ await ok('等待：安静即重启、到顶即放弃、其余继续等（纯函�
   assert.equal(__test.waitingDecision({ active: true }, Number.NaN, since), 'keep', '时间读不出来就继续等')
 })
 
-await ok('重启回执：pid 相同不算重启，变了才算，会话数有上限（2026-10-21）', async () => {
+await ok('重启回执：nonce、profile、实例与有效期匹配才接受，会话数有上限', async () => {
   const at = new Date(1_700_000_000_000).toISOString()
-  // 没有标记 / 形状不对 → 不是重启
-  assert.equal(__test.restartReceipt(null, 100, 1_700_000_060_000), null, '没有标记就不是重启')
-  assert.equal(__test.restartReceipt({}, 100, Date.now()), null, '没有 at 就不是重启')
-  assert.equal(__test.restartReceipt({ at: '不是时间', hostPid: 1 }, 100, Date.now()), null, 'at 读不出来就不猜')
-  // 同一个 pid：插件热重载/同进程重载 —— 既不算重启，也不续跑
-  assert.equal(__test.restartReceipt({ at, hostPid: 100 }, 100, 1_700_000_060_000), null, 'pid 没变就不是重启')
-  // pid 变了 → 回执，停机时间按 at 算
-  const receipt = __test.restartReceipt({ at, hostPid: 100, sessions: ['a', 'b', ''] }, 200, 1_700_000_060_000)
-  assert.ok(receipt !== null, 'pid 变了就是重启')
+  const marker = { schema: 1, restartId: 'nonce', profileId: 'profile', instanceId: 'instance', status: 'pending', requestedAt: at, sessions: ['a', 'b', ''] }
+  const now = 1_700_000_060_000
+  assert.equal(__test.restartReceipt(null, 'nonce', 'profile', 'instance', now), null)
+  assert.equal(__test.restartReceipt({ at, hostPid: 100 }, 'nonce', 'profile', 'instance', now), null, '旧记录不恢复')
+  assert.equal(__test.restartReceipt(marker, 'other', 'profile', 'instance', now), null)
+  assert.equal(__test.restartReceipt(marker, 'nonce', 'other', 'instance', now), null)
+  assert.equal(__test.restartReceipt(marker, 'nonce', 'profile', 'other', now), null)
+  assert.equal(__test.restartReceipt(marker, 'nonce', 'profile', 'instance', now + 86_400_000), null)
+  const receipt = __test.restartReceipt(marker, 'nonce', 'profile', 'instance', now)
+  assert.ok(receipt !== null)
   assert.equal(receipt.downtimeMs, 60_000, '停机时间 = 现在 - 标记时间')
-  assert.deepEqual(receipt.sessions, ['a', 'b'], '空会话 id 要滤掉')
-  // 会话数上限：一次重启不该唤醒一大片
-  const many = Array.from({ length: 20 }, (_, i) => `s${String(i)}`)
-  const capped = __test.restartReceipt({ at, hostPid: 1, sessions: many }, 2, 1_700_000_060_000)
-  assert.equal(capped.sessions.length, 8, '最多 8 个会话')
-})
-
-await ok('重启回执：只挑「正在干活」的会话（判据与守卫一致）', async () => {
-  const agents = {
-    list: () => [
-      { id: 'running-one', status: 'running', inbox: { nextTurn: [], nextStep: [] } },
-      { id: 'queued-one', status: 'idle', inbox: { nextTurn: [1], nextStep: [] } },
-      { id: 'queued-step', status: 'idle', inbox: { nextTurn: [], nextStep: [1, 2] } },
-      { id: 'idle-one', status: 'idle', inbox: { nextTurn: [], nextStep: [] } },
-      { id: '', status: 'running' },
-      { status: 'running' },
-    ],
-  }
-  assert.deepEqual(
-    __test.busySessionsOf(agents),
-    ['running-one', 'queued-one', 'queued-step'],
-    '正在跑或有排队的才算「被打断」，空闲会话不打扰',
-  )
-  assert.deepEqual(__test.busySessionsOf(undefined), [], '拿不到 agents 服务就返回空（绝不猜）')
-  assert.deepEqual(__test.busySessionsOf({ list: () => null }), [], 'list 形状意外也返回空')
-  assert.deepEqual(__test.busySessionsOf({ list: () => { throw new Error('boom') } }), [], '抛错也返回空')
 })
 
 await ok('平台：非 Windows 在入口说明白，而不是走到一半晦涩失败（C 项）', async () => {
@@ -626,7 +606,7 @@ await ok('平台：非 Windows 在入口说明白，而不是走到一半晦涩�
   for (const platform of ['linux', 'darwin', 'aix']) {
     const message = __test.platformUnsupported(platform)
     assert.match(String(message), new RegExp(platform, 'u'), `说明里要带上平台名（${platform}）`)
-    assert.match(String(message), /tasklist/u, '要说清缺的是什么')
+    assert.match(String(message), /PowerShell\/CIM/u, '要说清缺的是什么')
   }
   assert.equal(__test.platformUnsupported('win32'), null)
 })
@@ -703,7 +683,7 @@ await ok('平台门：没有 connection 服务时退回自检（不拦、不报�
   assert.equal(bare.verdict, null)
 })
 
-await ok('平台门：ctx.get 抛异常时不硬拦（一次故障不能把重启按钮锁死）', async () => {
+await ok('平台门：ctx.get 异常保留诊断，由敏感写路由拒绝', async () => {
   const fence = __test.platformFence({ get: () => { throw new Error('boom') } }, makeReq('POST'))
   assert.equal(fence.available, false)
   assert.equal(fence.verdict, null)
@@ -727,13 +707,13 @@ await ok('平台门：401 / 403 原样透传，undefined 表示放行', async ()
   assert.deepEqual(__test.platformFence(build(undefined), makeReq('POST')), { available: true, verdict: null, error: null })
 })
 
-await ok('平台门：requestRejection 自己抛异常时按「不拦」处理并记下原因', async () => {
+await ok('平台门：requestRejection 异常与鉴权拒绝分别记录', async () => {
   const ctxThrows = {
     get: (name) => (name === 'connection' ? { requestRejection: () => { throw new Error('nope') } } : undefined),
   }
   const fence = __test.platformFence(ctxThrows, makeReq('POST'))
   assert.equal(fence.available, true)
-  assert.equal(fence.verdict, null, '一次偶发故障不能放大成「应用重启不了」')
+  assert.equal(fence.verdict, null, '异常由 error 字段交给写路由处理')
   assert.match(String(fence.error), /nope/u)
 })
 
@@ -776,12 +756,13 @@ await ok('写路由：平台放行时照常往下走（这里走到「不是桌�
   assert.match(JSON.parse(res.body).error, /桌面版/u)
 })
 
-await ok('写路由：requestRejection 抛异常时不拦，仍走到后续判定', async () => {
+await ok('写路由：requestRejection 抛异常时返回503，不执行敏感操作', async () => {
   const routesThrow = ctxWithConnection({ requestRejection: () => { throw new Error('nope') } })
   const res = makeRes()
   await routesThrow.get('/dsh-desktop-restart/api/restart').handler(makeReq('POST'), res)
-  assert.equal(res.statusCode, 409)
-  assert.match(JSON.parse(res.body).error, /桌面版/u)
+  assert.equal(res.statusCode, 503)
+  assert.equal(JSON.parse(res.body).ok, false)
+  assert.match(JSON.parse(res.body).error, /鉴权/u)
 })
 
 await ok('状态路由：只诊断不拦 —— 鉴权失败也回 200 并把判定说出来', async () => {
@@ -856,6 +837,7 @@ await ok('清理：真删目录，前缀不对的、不是目录的都不动', a
   const result = await sweepOrphanSnapshots({
     tempRoot: root,
     startedAtMs: Date.now() + 60_000,
+    ownerCheck: { known: true, activeHosts: [] },
     minAgeMs: 0,
     log: (line) => logLines.push(line),
     // 注入时间戳来源：测试专用钩子，生产路径不传它。字段名与 node:fs 的
@@ -961,53 +943,6 @@ await ok('清理：设置文件里没有这一项时，默认值来自 config', 
   const onRes = makeRes()
   onRoutes.get('/dsh-desktop-restart/api/status').handler(makeReq('GET'), onRes)
   assert.equal(JSON.parse(onRes.body).sweep.enabled, true, 'config.sweep=true → 开启')
-})
-
-await ok('重启后续跑：默认关闭，config/设置都能打开，认不出的值一律关（2026-10-21）', async () => {
-  const settingsFile = join(String(process.env.DSH_HOME), 'desktop-restart', 'settings.json')
-  rmSync(settingsFile, { force: true })
-  const statusOf = (config) => {
-    const probe = new Map()
-    hostHalf.apply({
-      effect: (fn) => { fn() },
-      webServer: { port: 19387, register: (spec) => { probe.set(spec.path, spec); return () => {} } },
-      logger: () => ({ info() {}, warn() {}, error() {} }),
-      inject: () => {},
-    }, { command: false, ...config })
-    const res = makeRes()
-    probe.get('/dsh-desktop-restart/api/status').handler(makeReq('GET'), res)
-    return JSON.parse(res.body)
-  }
-  // ① 新用户（没 config、没设置文件）→ 关：续跑会花 token，必须自己开
-  assert.equal(statusOf({}).resume, 'off', '默认必须是 off')
-  // ② config 给默认值 → 生效
-  assert.equal(statusOf({ resume: 'wake' }).resume, 'wake', 'config.resume=wake 生效')
-  assert.equal(statusOf({ resume: 'notice' }).resume, 'notice', 'config.resume=notice 生效')
-  // ③ 认不出的值 → 关（宁可不动，也不猜）
-  assert.equal(statusOf({ resume: 'yes' }).resume, 'off', '认不出的值按 off')
-  // ④ 用户在设置里点开的 → 优先于 config
-  __test.writeSettings({ resume: 'wake' }, settingsFile)
-  assert.equal(statusOf({ resume: 'notice' }).resume, 'wake', '用户点过的值优先')
-  rmSync(settingsFile, { force: true })
-})
-
-await ok('设置路由：resume 开关能写能读，且走同一套守卫', async () => {
-  const settingsFile = join(String(process.env.DSH_HOME), 'desktop-restart', 'settings.json')
-  const prefs = routes.get('/dsh-desktop-restart/api/prefs')
-  assert.ok(prefs, '缺 prefs 路由')
-  const on = makeRes()
-  await prefs.handler(makeReq('POST', { url: '/dsh-desktop-restart/api/prefs?resume=wake' }), on)
-  assert.equal(JSON.parse(on.body).resume, 'wake', '打开后回 wake')
-  assert.equal(__test.readSettings(settingsFile).resume, 'wake', '要落到 settings.json（宿主侧说了算）')
-  const off = makeRes()
-  await prefs.handler(makeReq('POST', { url: '/dsh-desktop-restart/api/prefs?resume=off' }), off)
-  assert.equal(JSON.parse(off.body).resume, 'off', '关掉后回 off')
-  // 非法值不写
-  const bad = makeRes()
-  await prefs.handler(makeReq('POST', { url: '/dsh-desktop-restart/api/prefs?resume=always' }), bad)
-  assert.equal(JSON.parse(bad.body).resume, 'off', '非法值不该被接受')
-  assert.equal(__test.readSettings(settingsFile).resume, 'off', 'settings.json 不该被非法值覆盖')
-  rmSync(settingsFile, { force: true })
 })
 
 await ok('清理设置路由：非 POST 返回 405', async () => {
@@ -1374,23 +1309,12 @@ await ok('client bundle：重启完成回执接进界面（2026-10-21）', async
   // 宿主在状态里给 lastRestart；客户端要读它、要有一句话、要显示出来。
   assert.match(source, /lastRestart: body\.lastRestart !== null/u, '要读宿主给的回执')
   assert.match(source, /function restartReceiptText/u, '要有回执文案函数')
-  assert.match(source, /restartReceipt: "已于 \{time\} 完成重启/u, '中文文案在字典里')
-  assert.match(source, /restart, armed, press, refresh, waitForIdle, cancelWait/u, 'useRestart 要 expose restart')
+  assert.match(source, /restartReceipt: "宿主已于 \{time\} 完成重启/u, '回执只证明Host恢复')
+  assert.match(source, /restart,\s*op,/u, 'useRestart 要 expose restart 与操作状态；额外状态字段不改变这个契约')
   // 主区面板里显示一行
   assert.match(source, /action\.restart !== null && React\.createElement\("p", \{ className: "dshdr-panel-note" \}, restartReceiptText/u, '面板要显示回执行')
   // 设置行：没有别的提示时优先显示回执，而不是干巴巴的默认说明
   assert.match(source, /action\.restart !== null \? restartReceiptText\(action\.restart\) : t\(DEFAULT_HINT_KEY\)/u, '设置行优先显示回执')
-})
-
-await ok('client bundle：续跑开关在设置里，默认关、写明会花 token（2026-10-21）', async () => {
-  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /function ResumeRow/u, '要有续跑开关那一行')
-  assert.match(source, /React\.createElement\(ResumeRow\)/u, '要挂进设置分区')
-  assert.match(source, /PREFS_ROUTE \+ \(on \? "\?resume=wake" : "\?resume=off"\)/u, '拨动要写宿主设置')
-  assert.match(source, /resumeHint: "注意：会额外消耗 token/u, '必须在说明里写明会花 token')
-  assert.match(source, /mode === null \? t\("sweepReading"\)/u, '没读到之前不要假装是关')
-  // 默认值来自宿主：客户端不许自己编（编错了就会与宿主不一致）
-  assert.match(source, /resume: typeof body\.resume === "string"/u, '模式只认宿主给的')
 })
 
 await ok('client bundle：图标优先用官方 IconRefreshOutlineRegular，兜底也是 16 格描边', async () => {
@@ -1568,7 +1492,7 @@ await ok('插件开关：清理那一行读写的宿主设置，不是浏览器�
   assert.match(source, /\?enabled=0/u, '关掉开关也要通知宿主')
   assert.match(source, /\?run=1/u, '「立即清理」要能单独触发一次')
   assert.match(source, /sweep: body\.sweep/u, '开关状态必须来自宿主的状态接口（不许客户端自己编默认值）')
-  assert.match(source, /躺够 24 小时/u, '界面要说清只清理什么样的目录')
+  assert.match(source, /当前版本只扫描并预览候选项，不会删除/u, '界面明确当前只预览')
 })
 
 await ok('左侧边栏：注册进官方座位 sidebar.footer.action，照官方 42px 动作行', async () => {
@@ -1635,7 +1559,7 @@ await ok('插件开关：手动清理必须留下看得见的回执', async () =
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   // 2026-10-10 实测：清理结果通常是「扫描 N 个、删掉 0 个」，两次一模一样时界面
   // 毫无变化，用户以为按钮坏了（其实点击成功）。所以手动清理必须写一句带时间戳的回执。
-  assert.match(source, /刚刚清理过/u, '手动清理后必须写一句回执')
+  assert.match(source, /刚刚扫描/u, '手动扫描后必须写一句回执')
   assert.match(source, /const clockOf/u, '回执要带时间戳，让「又跑了一次」看得见')
   assert.match(source, /describe\(last\)/u, '提示文字统一走 describe（含时间戳）')
   assert.match(source, /call\("\?run=1", true\)/u, '「立即清理」要标成手动触发')
@@ -1798,6 +1722,7 @@ await okWindows('helper：目标映像名不符时拒绝，且不启动任何进
     hostPid: 1,
     port: 0,
     logPath,
+    opPath: join(dir, 'op.json'),
     delayMs: 50,
   }), 'utf8')
 
@@ -1809,18 +1734,19 @@ await okWindows('helper：目标映像名不符时拒绝，且不启动任何进
   assert.doesNotMatch(log, /relaunched/u, 'helper 不应启动任何进程')
 })
 
-await okWindows('helper：新实例立刻退出时会重试，试完如实认输且不谎报成功', () => {
+await okWindows('helper：缺少可验证主进程时拒绝拉起，不伪造重启成功', () => {
   const dir = scratch('relaunch')
   const logPath = join(dir, 'helper.log')
   const handoffPath = join(dir, 'handoff.json')
   writeFileSync(handoffPath, JSON.stringify({
-    // 不存在的 pid：helper 查不到映像名，于是跳过 kill，直接走到拉起那一步。
+    // 不存在的 pid：缺少实例归属证明，必须停止，不能在未知实例旁重拉。
     mainPid: 999999999,
     // where.exe 不带参数会立即退出，正好模拟「拉起来了但没活下来」。
     exe: 'C:\\Windows\\System32\\where.exe',
     hostPid: 1,
     port: 0,
     logPath,
+    opPath: join(dir, 'op.json'),
     delayMs: 50,
     relaunchAttempts: 3,
     relaunchVerifyMs: 100,
@@ -1832,11 +1758,8 @@ await okWindows('helper：新实例立刻退出时会重试，试完如实认输
   assert.equal(result.status, 0)
 
   const log = readFileSync(logPath, 'utf8')
-  assert.match(log, /relaunched/u, '应当记录已拉起')
-  assert.match(log, /already gone/u, '应当识别出新实例已经退出')
-  assert.match(log, /relaunch attempt 2\/3/u, '第一次没活下来应当再试')
-  assert.match(log, /relaunch attempt 3\/3/u, '第二次没活下来应当再试')
-  assert.match(log, /did not take after 3 attempt/u, '试完必须如实认输')
+  assert.match(log, /refusing:.*could not prove/u, '必须说明无法证明实例归属')
+  assert.doesNotMatch(log, /relaunched/u, '没有身份证明不能拉起')
   assert.doesNotMatch(log, /restart complete/u, '不应谎报重启完成')
 })
 
@@ -1895,32 +1818,30 @@ await ok('helper：拉起新实例前清掉上一次进程的痕迹，保留安�
   helper.launchEnvFrom(source)
   assert.equal(source.DSH_SHELL, '1', '不能改动调用方给的对象')
 })
-await ok('helper：兜底清理只认同一个可执行文件，且跳过 host / 主进程 / 自己', async () => {
+await ok('helper：兜底只选可证明的后代，同路径其他实例不参与', async () => {
   const exe = 'C:\\Program Files\\DSH\\DeepSeek Harness.exe'
+  const createdAt = '2026-10-21T01:00:00.000Z'
   const processes = [
-    { pid: 10, path: exe },
-    { pid: 11, path: exe.toUpperCase() },
-    { pid: 12, path: 'D:\\Other Copy\\DeepSeek Harness.exe' },
-    { pid: 13, path: null },
-    { pid: 0, path: exe },
-    { pid: 'x', path: exe },
+    { pid: 10, parentPid: 1, path: exe, createdAt },
+    { pid: 11, parentPid: 10, path: exe.toUpperCase(), createdAt },
+    { pid: 12, parentPid: 10, path: 'D:\\Other Copy\\DeepSeek Harness.exe', createdAt },
+    { pid: 13, parentPid: 10, path: null, createdAt },
+    { pid: 20, parentPid: 1, path: exe, createdAt },
   ]
-  assert.deepEqual(helper.leftoverPids(processes, exe), [10, 11])
-  // host 与主进程、helper 自己用的是同一个可执行文件：它们必须由调用方显式排除，
-  // 否则 host 会被当成「残留进程」顺手结束 —— 那正是「不带 /T」要避免的事。
-  assert.deepEqual(helper.leftoverPids(processes, exe, [10]), [11], 'skip 里的 pid 不参与清理')
-  assert.deepEqual(helper.leftoverPids(processes, exe, [10, 11]), [], '全被排除时没有候选')
-  assert.deepEqual(helper.leftoverPids([], exe), [])
-  assert.deepEqual(helper.leftoverPids(null, exe), [])
+  assert.deepEqual(helper.leftoverPids(processes, 10, exe), [11])
+  assert.deepEqual(helper.leftoverPids(processes, 10, exe, [11]), [])
+  assert.deepEqual(helper.leftoverPids(processes, 99, exe), [], '未知根进程不推断归属')
+  assert.deepEqual(helper.leftoverPids([], 10, exe), [])
+  assert.deepEqual(helper.leftoverPids(null, 10, exe), [])
 })
 
-await okWindows('helper：端口迟迟不放时先清残留，最后才单独结束 host', async () => {
+await okWindows('helper：端口被占但实例归属不明时保留替身host', async () => {
   // 占住一个端口，模拟「主进程已经没了，host 还攥着监听不放」。
   const server = net.createServer()
   await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve) })
   const port = server.address().port
 
-  // 替身 host：一个真的进程，等 helper 来结束它。
+  // 替身 host：一个真的测试进程；helper 无权结束它，只由本测试在finally收尾。
   const decoy = spawn(process.execPath, ['-e', 'setTimeout(function () {}, 60000)'], {
     stdio: 'ignore',
     windowsHide: true,
@@ -1946,6 +1867,7 @@ await okWindows('helper：端口迟迟不放时先清残留，最后才单独结
       hostPid: decoy.pid,
       port,
       logPath,
+      opPath: join(dir, 'op.json'),
       delayMs: 50,
       relaunchAttempts: 1,
       relaunchVerifyMs: 100,
@@ -1960,9 +1882,7 @@ await okWindows('helper：端口迟迟不放时先清残留，最后才单独结
     assert.equal(result.status, 0)
 
     const log = readFileSync(logPath, 'utf8')
-    assert.match(log, /port \d+ is still held/u, '应当识别出端口还被占着')
-    assert.match(log, /still holds port/u, '应当识别出攥着端口的正是 host')
-    assert.match(log, /as a last resort/u, '应当写明这是最后手段、代价是什么')
+    assert.match(log, /refusing:.*could not prove/u, '实例归属不明应拒绝')
     assert.doesNotMatch(
       log,
       new RegExp(`killing leftover pid ${String(decoy.pid)}\\b`, 'u'),
@@ -1970,16 +1890,16 @@ await okWindows('helper：端口迟迟不放时先清残留，最后才单独结
     )
 
     await new Promise((resolve) => { setTimeout(resolve, 300) })
-    assert.equal(alive(decoy.pid), false, '最后一道必须真的结束 host')
+    assert.equal(alive(decoy.pid), true, '不属于已验证实例的host必须保持存活')
   } finally {
     if (alive(decoy.pid)) decoy.kill()
     server.close()
   }
 })
 
-await okWindows('helper：问不出进程表时不当成「主进程已经没了」', async () => {
+await okWindows('helper：问不出进程表时拒绝，不盲杀或重拉', async () => {
   // 把 PATH 指到一个空目录：tasklist / taskkill / powershell 全都调不到，
-  // 正好模拟「进程表读不出来」。helper 必须照样结束主进程，而不是以为它已经没了。
+  // 正好模拟「进程表读不出来」。helper 必须拒绝操作。
   const emptyPath = scratch('nopath')
   const dir = scratch('blind')
   const logPath = join(dir, 'helper.log')
@@ -1991,6 +1911,7 @@ await okWindows('helper：问不出进程表时不当成「主进程已经没了
     hostPid: 1,
     port: 0,
     logPath,
+    opPath: join(dir, 'op.json'),
     delayMs: 50,
     relaunchAttempts: 1,
     relaunchVerifyMs: 100,
@@ -2004,9 +1925,8 @@ await okWindows('helper：问不出进程表时不当成「主进程已经没了
   assert.equal(result.status, 0)
 
   const log = readFileSync(logPath, 'utf8')
-  assert.match(log, /could not read the process table/u, '读不到进程表时必须如实说明')
-  assert.match(log, /without an image-name check/u, '读不到时仍然要结束主进程')
-  assert.doesNotMatch(log, /is already gone; skipping the kill/u, '「问不出来」不能被当成「已经没了」')
+  assert.match(log, /refusing:.*could not prove/u, '读不到身份时必须如实拒绝')
+  assert.doesNotMatch(log, /taskkill|relaunched/u, '身份不可验证时不能杀进程或重拉')
 })
 
 await ok('helper：命令行分词在引号内保留空格', async () => {
@@ -2067,5 +1987,13 @@ console.log('')
 if (skippedWindowsOnly > 0) {
   console.log('all ' + String(passed) + ' checks passed (' + String(skippedWindowsOnly) + ' skipped: Windows-only)')
 } else {
+await ok('等待态必须能「仍要立即重启」（2026-10-22）', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  assert.match(source, /forceNowRestart/u, 'action 要暴露 forceNowRestart')
+  assert.match(source, /forceNow: "/u, '按钮文案要有中英文')
+  assert.match(source, /params\.push\("now=1"\)/u, '强制请求必须跳过等待')
+  assert.match(source, /React\.createElement\(React\.Fragment, null, main, force\)/u, '等待态同时渲染两个按钮')
+})
+
   console.log('all ' + String(passed) + ' checks passed')
 }

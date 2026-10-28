@@ -1,7 +1,7 @@
 {
   "name": "@luoshuizhiwei/dsh-desktop-restart",
   "version": "0.4.5",
-  "description": "DeepSeek Harness desktop restart plugin: five entries (sidebar panel / sidebar footer / conversation header / slash command / settings row) restart the whole Electron app through a detached helper; restarts are hard-blocked while a plugin install/update is running; also sweeps DSH's leftover temp snapshots and hides the easy-to-misclick Feedback item. UI text follows the app's language (zh/en). 桌面版重启插件：五个入口一键重启整个 Electron 应用；插件安装/更新中硬拦重启；顺手清理 Temp 遗留快照、藏掉易误点的「意见反馈」；界面文案跟随主应用语言（中/英）。",
+  "description": "DeepSeek Harness desktop restart plugin with guarded restart, one-time receipts, snapshot candidate previews and optional Feedback hiding. UI follows the app language (zh/en). 桌面版重启插件：受保护的重启、一次性回执、快照候选预览及可选隐藏反馈；界面跟随主应用语言（中/英）。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -34,7 +34,7 @@
     "dsh": ">=0.2.0-rc.1"
   },
   "scripts": {
-    "test": "node scripts/smoke.mjs",
+    "test": "node scripts/smoke.mjs && node --experimental-vm-modules scripts/host-regression.mjs && node scripts/client-regression.mjs && node scripts/engine-regression.mjs && node scripts/opt02-regression.mjs && node scripts/boot-regression.mjs && node --experimental-vm-modules scripts/wallclock-countdown.mjs",
     "prepublishOnly": "npm test"
   },
   "dsh": {
