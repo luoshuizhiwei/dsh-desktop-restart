@@ -34,6 +34,28 @@ Restart appears in these places, **all enabled by default**:
 
 Turn off any entry you do not want under **Settings → Restart Desktop App**. Changes apply immediately — no app restart needed.
 
+## Screenshots
+
+**Main panel** — status, restart, refresh, wait-until-idle
+
+![Main panel](https://raw.githubusercontent.com/luoshuizhiwei/dsh-desktop-restart/master/docs/images/panel.png)
+
+**Account menu entry** — open the avatar menu at the bottom left; it is the top item
+
+![Account menu](https://raw.githubusercontent.com/luoshuizhiwei/dsh-desktop-restart/master/docs/images/account-menu.png)
+
+**Sidebar footer entry** — click twice to restart
+
+![Sidebar footer](https://raw.githubusercontent.com/luoshuizhiwei/dsh-desktop-restart/master/docs/images/sidebar-footer.png)
+
+**Settings page** — five entry toggles, countdown, sign-in data health
+
+![Settings](https://raw.githubusercontent.com/luoshuizhiwei/dsh-desktop-restart/master/docs/images/settings-entries.png)
+
+**Conversation header button** — always within reach
+
+![Header button](https://raw.githubusercontent.com/luoshuizhiwei/dsh-desktop-restart/master/docs/images/header-button.png)
+
 ---
 
 ## How it protects you

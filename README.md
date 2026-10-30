@@ -34,6 +34,28 @@
 
 不想要的入口可以在 **设置 → 重启桌面应用** 里逐个关掉，改完立即生效，不用重启应用。
 
+## 界面预览
+
+**主面板** —— 状态、重启、刷新状态、等空闲再重启
+
+![主面板](https://raw.githubusercontent.com/luoshuizhiwei/dsh-desktop-restart/master/docs/images/panel.png)
+
+**账号菜单里的入口** —— 打开左下角头像菜单，最上面就是它
+
+![账号菜单](https://raw.githubusercontent.com/luoshuizhiwei/dsh-desktop-restart/master/docs/images/account-menu.png)
+
+**侧栏底部的入口** —— 点两次直接重启
+
+![侧栏底部入口](https://raw.githubusercontent.com/luoshuizhiwei/dsh-desktop-restart/master/docs/images/sidebar-footer.png)
+
+**设置页** —— 五个入口开关、倒计时、Cookie 健康检查
+
+![设置页](https://raw.githubusercontent.com/luoshuizhiwei/dsh-desktop-restart/master/docs/images/settings-entries.png)
+
+**会话标题栏的按钮** —— 会话页抬头右侧，随手可用
+
+![标题栏按钮](https://raw.githubusercontent.com/luoshuizhiwei/dsh-desktop-restart/master/docs/images/header-button.png)
+
 ---
 
 ## 它怎么保护你
