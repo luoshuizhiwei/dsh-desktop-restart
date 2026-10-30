@@ -86,7 +86,7 @@ function makeHarness(fetchHandler, options = {}) {
     window,
     document,
     MutationObserver: options.dom?.MutationObserver,
-    navigator: { language: 'en-US' },
+    navigator: { language: options.language ?? 'en-US' },
     fetch,
     console,
     Symbol,

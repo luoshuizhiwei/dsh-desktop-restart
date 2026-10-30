@@ -2909,5 +2909,7 @@ if (!process.env.DSHDR_FIRSTOPEN_CASE || process.env.DSHDR_FIRSTOPEN_CASE === 'G
 
 const {menuFirstOpen2Checks}=await import('./menu-firstopen2-regression.mjs')
 passed+=menuFirstOpen2Checks
+const {hoverChecks}=await import('./hover-flicker-regression.mjs')
+passed+=hoverChecks
 console.log(`all ${passed} client regression checks passed`)
 
