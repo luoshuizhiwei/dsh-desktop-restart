@@ -1,6 +1,6 @@
 {
   "name": "@luoshuizhiwei/dsh-desktop-restart",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Adds a restart button to the DeepSeek Harness desktop app. If work is still running it asks before restarting, and afterwards it tells you how long the app was down. Optional extras: check the size of saved sign-in data, preview leftover temp files, hide the feedback item in the account menu. UI follows the app language (zh/en). 给 DeepSeek Harness 桌面版加一个重启按钮：有任务在跑时会先问过你，重启后告诉你停机了多久。另有可选功能：检查登录数据占用、预览遗留临时文件、隐藏账号菜单里的意见反馈。界面跟随应用语言（中/英）。",
   "keywords": [
     "dsh",

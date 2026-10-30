@@ -262,7 +262,7 @@ Cross-process restarts use `desktop-restart/restart.lock` (atomic creation plus 
 
 ## Known limitations
 
-- Package version `0.4.5`.
+- Package version `0.4.6`.
 - Accepted on a real machine: the full restart chain (including downtime measurement and receipt), account-menu first-open injection, panel button states, log redaction.
 - Not yet accepted: screen readers, frame-by-frame absence of visual flicker, menu keyboard navigation, multi-window concurrency, per-theme and narrow-width pixel layout.
 - Offline tests cover the state machine, fail-safes, concurrency and isolated fixtures; passing `npm test` does not mean the real-machine items above are accepted.
