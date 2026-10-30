@@ -46,6 +46,23 @@ export function accountMenuDOM(scenario = 'normal') {
     removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn) }
   }
   body = new Node('body')
+  // 2026-10-30：模拟真实 MutationObserver 的自动微任务投递 —— body 的
+  // childList 变更（appendChild/insertBefore/remove 影响 body 的 children）后，
+  // 把变更排进微任务通知所有活跃观察者（真实浏览器行为；旧 fixture 只能手动 notify）。
+  const pendingMicrotask = { scheduled: false }
+  const scheduleBodyNotify = () => {
+    if (pendingMicrotask.scheduled) return
+    pendingMicrotask.scheduled = true
+    queueMicrotask(() => {
+      pendingMicrotask.scheduled = false
+      notify([])
+    })
+  }
+  const rawBodyAppend = body.appendChild.bind(body)
+  body.appendChild = (node) => { const r = rawBodyAppend(node); scheduleBodyNotify(); return r }
+  const rawBodyInsert = body.insertBefore.bind(body)
+  body.insertBefore = (node, ref) => { const r = rawBodyInsert(node, ref); scheduleBodyNotify(); return r }
+  const rawBodyRemove = body.removeChild ? body.removeChild.bind(body) : null
   const head = new Node('head')
   const trigger = new Node('button')
   trigger.setAttribute('aria-haspopup', 'menu')

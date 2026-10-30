@@ -2028,7 +2028,7 @@ for (const elapsed of [5100, 1000]) {
   const h = makeHarness(async () => reply(200, busyStatus()), {dom, clock, timer:true})
   const mount = h.render(h.panelComponent)
   await flush()
-  dom.open(); h.fireTimer(0); h.settleMenu()
+  dom.open(); await flush(); h.settleMenu()
   assert.equal(dom.injected().length, 1)
   const button = dom.injected()[0]
   assert.equal(button.getAttribute('role'), 'menuitem')
@@ -2040,7 +2040,7 @@ for (const elapsed of [5100, 1000]) {
   assert.deepEqual(officialItems.map(node => node.getAttribute('data-host-id')), ['settings','contact','signout'])
   console.log('MENU ORDER signed-in: restart -> ' + officialItems.map(node => node.getAttribute('data-host-id')).join(' -> '))
   assert.match(button.textContent, /Restart desktop app/u)
-  dom.clickTrigger(); h.fireTimer(0); h.settleMenu()
+  dom.clickTrigger(); await flush(); h.settleMenu()
   assert.equal(dom.injected().length, 1, 'repeated discovery remains idempotent')
   assert.equal(dom.injected()[0],button,'repeated discovery reuses the same node')
   const panel = h.render(h.panelComponent, mount.hook).tree
@@ -2059,7 +2059,7 @@ for (const elapsed of [5100, 1000]) {
   assert.equal(dom.observations().length, 0, 'closing disconnects both observation targets')
   h.unmount(mount.hook)
   assert.equal(h.timerDelays().filter(ms => ms === 1000 || ms === 2000).length, 0, 'closed menu has no leaked store subscription')
-  dom.open(); h.fireTimer(0); h.settleMenu()
+  dom.open(); await flush(); h.settleMenu()
   assert.equal(dom.injected().length, 1, 'reopening creates exactly one fresh item')
   h.dispose()
   assert.equal(dom.injected().length, 0)
@@ -2074,7 +2074,11 @@ for (const scenario of ['missing', 'empty', 'ambiguous', 'wrong-launcher', 'nest
   const original = dom.originalSnapshot()
   dom.open()
   if (scenario === 'wrong-launcher') assert.ok(!h.timerDelays().includes(0))
-  else h.fireTimer(0); h.settleMenu()
+  else {
+    await flush(); h.settleMenu()
+    // 2026-10-30 新路径：菜单未出现时发现观察器等到 500ms 超时才断开。
+    if (h.timerDelays().includes(500)) h.fireTimer(500)
+  }
   assert.equal(dom.injected().length, 0, scenario)
   assert.equal(dom.originalSnapshot(), original, `${scenario}: original page remains unchanged`)
   assert.equal(dom.observations().length, 0, `${scenario}: no observation left after skipped/failed injection`)
@@ -2096,7 +2100,7 @@ for (const scenario of ['missing', 'empty', 'ambiguous', 'wrong-launcher', 'nest
   const toggle = walk(tree, n => n.type === 'input' && n.props['aria-label'] === 'Show restart in the account menu')
   assert.ok(toggle)
   toggle.props.onChange({target:{checked:true}})
-  dom.clickTrigger(); h.fireTimer(0); h.settleMenu()
+  dom.clickTrigger(); await flush(); h.settleMenu()
   assert.equal(dom.injected().length, 1)
   tree = h.render(h.settingsComponent, mount.hook).tree
   walk(tree, n => n.type === 'input' && n.props['aria-label'] === 'Show restart in the account menu').props.onChange({target:{checked:false}})
@@ -2151,7 +2155,7 @@ for (const entry of ['store', 'local']) {
     if (options.method === 'POST') { posts.push(url); return reply(409, busyStatus()) }
     return reply(200, statusBody('off'))
   }, {dom, primitives:{RiskConfirmation:function RiskConfirmation(){}}})
-  await flush(); dom.open(); h.fireTimer(0); h.settleMenu(); await flush()
+  await flush(); dom.open(); await flush(); h.settleMenu(); await flush()
   dom.clickItem(); assert.equal(dom.injected()[0].getAttribute('data-phase'), 'confirm')
   dom.clickItem(); await flush()
   assert.equal(posts.length, 1)
@@ -2168,7 +2172,7 @@ for (const scenario of ['grouped', 'signed-out']) {
   const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
   await flush()
   const original = dom.originalSnapshot()
-  dom.open(); h.fireTimer(0); h.settleMenu()
+  dom.open(); await flush(); h.settleMenu()
   const button = dom.injected()[0]
   assert.ok(button)
   assert.equal(dom.menu.querySelector('button[role="menuitem"]'), button)
@@ -2225,7 +2229,7 @@ for (const scenario of ['grouped', 'signed-out']) {
 {
   const dom=accountMenuDOM('staged')
   const h=makeHarness(async()=>reply(200,statusBody('off')),{dom})
-  await flush();dom.open();h.fireTimer(0)
+  await flush();dom.open();await flush()
   const button=dom.injected()[0]
   assert.ok(button,'inserts immediately without waiting for all menu items')
   assert.equal(button.parentElement,dom.viewport)
@@ -2259,9 +2263,9 @@ for (const scenario of ['grouped', 'signed-out']) {
 {
   const dom=accountMenuDOM()
   const h=makeHarness(async()=>reply(200,statusBody('off')),{dom})
-  await flush();dom.open();h.fireTimer(0);dom.close();h.fireFrame()
+  await flush();dom.open();await flush();dom.close();h.fireFrame()
   assert.equal(dom.injected().length,0);assert.equal(h.frameCount(),0)
-  dom.open();h.fireTimer(0);h.dispose()
+  dom.open();await flush();h.dispose()
   assert.equal(h.frameCount(),0);assert.equal(dom.observations().length,0)
   passed++;console.log(`ok ${passed} - closing/unloading during stabilization leaves no frame or injected node`)
 }
@@ -2334,7 +2338,7 @@ for(const reason of ['database-unavailable','sqlite-unavailable']) {
 {
   const dom=accountMenuDOM()
   const h=makeHarness(async()=>reply(200,statusBody('off')),{dom})
-  await flush();dom.open();h.fireTimer(0)
+  await flush();dom.open();await flush()
   dom.prependHostItem({beforeInjected:true,deliver:false})
   h.fireFrame()
   assert.equal(dom.insertEvents.length,2,'failed next-frame check retries exactly once')
@@ -2365,7 +2369,7 @@ for (const [name,stored,hostValue,expected] of [
   const control=walk(mount.tree,n=>n.type==='input'&&n.props['aria-label']==='Show restart in the account menu')
   assert.ok(control,name+': switch exists');assert.equal(control.props.checked,expected,name)
   dom.open()
-  if(expected){h.fireTimer(0);h.settleMenu()}
+  if(expected){await flush();h.settleMenu()}
   assert.equal(dom.injected().length,expected?1:0,name)
   assert.doesNotMatch(textContent(mount.tree),/Account menu diagnostic|Health and diagnostics/u)
   console.log(`ACCOUNT SWITCH ${name}: ${expected}; injected=${dom.injected().length}`)
@@ -2377,12 +2381,12 @@ for (const [name,stored,hostValue,expected] of [
   const h=makeHarness(async()=>reply(200,statusBody('off',{entries:{accountMenu:true}})),{dom})
   await flush()
   const settings=h.render(h.settingsComponent)
-  dom.open();h.fireTimer(0);h.settleMenu()
+  dom.open();await flush();h.settleMenu()
   const toggle=()=>walk(h.render(h.settingsComponent,settings.hook).tree,n=>n.type==='input'&&n.props['aria-label']==='Show restart in the account menu')
   toggle().props.onChange({target:{checked:false}})
   assert.equal(dom.injected().length,0)
   toggle().props.onChange({target:{checked:true}})
-  h.fireTimer(0);h.settleMenu()
+  await flush(); h.settleMenu()
   assert.equal(dom.injected().length,1,'enabling while menu is open immediately injects without a new click')
   dom.close();assert.equal(dom.injected().length,0)
   h.unmount(settings.hook);h.dispose()
@@ -2392,7 +2396,7 @@ for (const [name,stored,hostValue,expected] of [
   const dom=accountMenuDOM('empty')
   const h=makeHarness(async()=>reply(200,statusBody('off',{entries:{accountMenu:true}})),{dom})
   await flush();const mount=h.render(h.settingsComponent)
-  dom.open();h.fireTimer(0);h.settleMenu()
+  dom.open();await flush();h.settleMenu()
   assert.equal(dom.injected().length,0)
   assert.doesNotMatch(textContent(h.render(h.settingsComponent,mount.hook).tree),/Account menu diagnostic|Health and diagnostics/u)
   h.unmount(mount.hook);h.dispose()
@@ -2401,12 +2405,16 @@ for (const [name,stored,hostValue,expected] of [
 
 // Deep-review regressions written on 2026-10-29. Execution awaits user approval.
 {
+  // 2026-10-30 新语义：菜单后到时由发现观察器接住 —— append 进 body 的微任务
+  // 回调里同步注入，无需 rAF 等待帧。
   const dom=accountMenuDOM('missing')
   const h=makeHarness(async()=>reply(200,statusBody()),{dom});await flush()
-  dom.open();h.fireTimer(0)
-  assert.equal(h.frameCount(),1,'one bounded discovery frame is pending')
+  dom.open()
+  assert.equal(h.frameCount(),0,'no discovery frame — injection is observer-driven')
   dom.document.body.appendChild(dom.menu)
-  h.fireFrame();assert.equal(dom.injected()[0].style.visibility,'hidden')
+  await flush()
+  assert.equal(dom.injected().length,1,'menu arrival injects via the discovery observer')
+  assert.equal(dom.injected()[0].style.visibility,'hidden')
   h.fireFrame();assert.equal(dom.injected()[0].style.visibility,'visible')
   assert.equal(dom.menu.firstElementChild,dom.material)
   assert.equal(dom.injected()[0].parentElement,dom.viewport)
@@ -2415,7 +2423,7 @@ for (const [name,stored,hostValue,expected] of [
 {
   const dom=accountMenuDOM()
   const h=makeHarness(async()=>reply(200,statusBody()),{dom});await flush()
-  dom.open();h.fireTimer(0);h.settleMenu()
+  dom.open();await flush();h.settleMenu()
   const original=dom.injected()[0]
   dom.prependHostItem({beforeInjected:true})
   assert.equal(original.isConnected,false,'a real host prepend retires the displaced button')
@@ -2582,5 +2590,226 @@ const {uiCleanupChecks}=await import('./ui-cleanup-regression.mjs')
 passed+=uiCleanupChecks
 const {repairChecks}=await import('./repair-20261030-regression.mjs')
 passed+=repairChecks
+
+// ── 2026-10-30 修复：执行期间面板出现两个「刷新状态」按钮 ──────────────────
+// 根因：StatusRetry 在 statusError==="" && opBusy===true 时也渲染，且标签与
+// RefreshButton 相同（refreshStatus）→ 执行期间两个相同按钮。修复：
+// StatusRetry 只在状态读取真的失败（statusError !== ""）时出现，标签恒为
+// retryStatus；执行期间的刷新由常驻 RefreshButton 独自承担。
+// B 系列：DSHDR_DUP_CASE 可单跑。
+
+// B1：执行期间（opBusy=true、statusError=""）动作区里「刷新状态」按钮恰好 1 个。
+if (!process.env.DSHDR_DUP_CASE || process.env.DSHDR_DUP_CASE === 'B1') {
+  const harness = makeHarness(async () => reply(200, statusBody('off', {
+    restartOp: { id: 'dup-op', phase: 'stop', result: 'pending', reason: null, stages: {}, ageMs: 0, argsPreserved: true, helperVerified: false, needsManualCheck: false, helperAlive: true, busy: true },
+    restartBusy: true,
+  })))
+  const mount = harness.render(harness.panelComponent)
+  await flush()
+  const tree = harness.render(harness.panelComponent, mount.hook).tree
+  const refreshButtons = buttons(tree).filter(b => /refresh status|refreshStatus|刷新状态|Retry status|重试状态/ui.test(String(b.props['aria-label'] ?? '') + String(b.props.title ?? '') + textContent(b)))
+  assert.equal(refreshButtons.length, 1, `B1: 执行期间动作区应恰有 1 个刷新/重试按钮，实际 ${refreshButtons.length}`)
+  assert.match(textContent(refreshButtons[0]) + String(refreshButtons[0].props['aria-label'] ?? ''), /refresh status|刷新状态/iu, 'B1: 该按钮应为「刷新状态」（RefreshButton）而非重试')
+  harness.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - B1 executing state renders exactly one refresh button`)
+}
+
+// B2：状态读取失败（statusError!=""）时出现「重试状态」，且 RefreshButton 不渲染
+//（既有互斥保持）。两个场景：纯错误态；错误后恢复读取且带 pending 操作
+//（先错后忙 —— 修复前 StatusRetry 曾在此借 opBusy 兼职刷新导致重复）。
+if (!process.env.DSHDR_DUP_CASE || process.env.DSHDR_DUP_CASE === 'B2') {
+  // (a) 纯错误态：fetch 抛错 → statusError 非空。
+  {
+    const harness = makeHarness(async () => { throw new Error('status offline') })
+    const mount = harness.render(harness.panelComponent)
+    await flush()
+    const tree = harness.render(harness.panelComponent, mount.hook).tree
+    const retry = buttons(tree).find(b => /retry status|重试状态/ui.test(String(b.props['aria-label'] ?? '') + String(b.props.title ?? '') + textContent(b)))
+    assert.ok(retry, 'B2a: 状态失败时必须渲染「重试状态」')
+    const plainRefresh = buttons(tree).filter(b => /refresh status|刷新状态/ui.test(String(b.props['aria-label'] ?? '') + String(b.props.title ?? '') + textContent(b)))
+    assert.equal(plainRefresh.length, 0, 'B2a: 出错时 RefreshButton 不得渲染（互斥保持）')
+    harness.unmount(mount.hook)
+  }
+  // (b) 先错后忙：第一次 GET 抛错；点「重试状态」后恢复，状态带 pending
+  // 操作（opBusy=true）—— 修复前 StatusRetry 仍按 opBusy 渲染「刷新状态」
+  // 与 RefreshButton 重复；修复后读取已恢复 → 只剩 RefreshButton。
+  {
+    let failing = true
+    const harness = makeHarness(async () => {
+      if (failing) throw new Error('status offline')
+      return reply(200, statusBody('off', {
+        restartOp: { id: 'b2-op', phase: 'stop', result: 'pending', reason: null, stages: {}, ageMs: 0, argsPreserved: true, helperVerified: false, needsManualCheck: false, helperAlive: true, busy: true },
+        restartBusy: true,
+      }))
+    })
+    const mount = harness.render(harness.panelComponent)
+    await flush()
+    let tree = harness.render(harness.panelComponent, mount.hook).tree
+    const retry = buttons(tree).find(b => /retry status|重试状态/ui.test(String(b.props['aria-label'] ?? '') + String(b.props.title ?? '') + textContent(b)))
+    assert.ok(retry, 'B2b: 错误态先出现「重试状态」')
+    failing = false
+    retry.props.onClick()
+    await flush()
+    tree = harness.render(harness.panelComponent, mount.hook).tree
+    const refreshButtons = buttons(tree).filter(b => /refresh status|refreshStatus|刷新状态|Retry status|重试状态/ui.test(String(b.props['aria-label'] ?? '') + String(b.props.title ?? '') + textContent(b)))
+    assert.equal(refreshButtons.length, 1, `B2b: 恢复读取且带 pending 操作时应恰有 1 个刷新按钮，实际 ${refreshButtons.length}`)
+    assert.match(textContent(refreshButtons[0]) + String(refreshButtons[0].props['aria-label'] ?? ''), /refresh status|刷新状态/iu, 'B2b: 该按钮应为「刷新状态」')
+    harness.unmount(mount.hook)
+  }
+  passed++;console.log(`ok ${passed} - B2 status failure shows the retry button; recovery keeps one refresh`)
+}
+
+// B3：正常态（opBusy=false、statusError=""）也只有一个「刷新状态」。
+if (!process.env.DSHDR_DUP_CASE || process.env.DSHDR_DUP_CASE === 'B3') {
+  const harness = makeHarness(async () => reply(200, statusBody()))
+  const mount = harness.render(harness.panelComponent)
+  await flush()
+  const tree = harness.render(harness.panelComponent, mount.hook).tree
+  const refreshButtons = buttons(tree).filter(b => /refresh status|refreshStatus|刷新状态|Retry status|重试状态/ui.test(String(b.props['aria-label'] ?? '') + String(b.props.title ?? '') + textContent(b)))
+  assert.equal(refreshButtons.length, 1, `B3: 正常态应恰有 1 个刷新按钮，实际 ${refreshButtons.length}`)
+  harness.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - B3 idle state renders exactly one refresh button`)
+}
+
+
+// ── 2026-10-30 消除账号菜单重启项的插入抖动（改为绘制前注入） ────────────────
+// 真机问题：点击账号菜单后，重启项「从最底部一瞬间跑到最上面」——注入发生在
+// 菜单首帧绘制之后，向顶部插入把官方项顶下去一行，用户看到布局跳动。
+// 修复：点击触发器时立即在 body 上挂 childList（不递归）MutationObserver，
+// 菜单元素被加入 body 的同一个回调里同步完成插入（React 提交 DOM 同步、
+// MO 回调在绘制前执行）⇒ 用户看不到无按钮的中间帧。观察器只在「点击后到
+// 菜单出现」窗口内存在，最长 500ms。
+// F 系列：DSHDR_MENU_CASE 可单跑。
+
+// F1：绘制前注入 —— 点击 → 菜单加入 body（同一同步批次）→ 按钮立即可见，
+// 全程不经过任何 rAF/setTimeout 等待。
+if (!process.env.DSHDR_MENU_CASE || process.env.DSHDR_MENU_CASE === 'F1') {
+  const dom = accountMenuDOM()
+  const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
+  await flush()
+  // open() 在同一同步批次里：设置 aria-expanded、把菜单加进 body、派发 click。
+  dom.open()
+  // 微任务投递（真实浏览器 MutationObserver 的交付时机——绘制前的微任务）。
+  // 不 fireTimer(0)、不 settleMenu() —— 注入不依赖任何宏任务定时器或 rAF。
+  await flush()
+  assert.equal(dom.injected().length, 1, 'F1: 菜单加入 body 的同一批次内完成注入（无 setTimeout/rAF 等待）')
+  // 注入在微任务里完成，不依赖 rAF；唯一的 pending 帧是 visibility 兜底（设计内保留）。
+  assert.ok(h.frameCount() <= 1, `F1: 注入不依赖 rAF（至多 1 个 visibility 兜底帧，实际 ${h.frameCount()}）`)
+  assert.ok(!h.timerDelays().includes(0), 'F1: 注入路径不依赖 setTimeout(0)')
+  const button = dom.injected()[0]
+  assert.equal(button.parentElement, dom.viewport, 'F1: 位置正确 —— parentElement === viewport')
+  assert.equal(dom.viewport.firstElementChild, button, 'F1: 是 viewport 的第一个子元素')
+  h.dispose()
+  passed++;console.log(`ok ${passed} - F1 same-batch injection before first paint, no rAF/setTimeout`)
+}
+
+// F2：不再依赖「连续两帧一致」门槛 —— 注入在菜单出现的观察器回调内同步
+// 完成；rAF 只剩 visibility 兜底（首帧确认后置 visible）。
+if (!process.env.DSHDR_MENU_CASE || process.env.DSHDR_MENU_CASE === 'F2') {
+  const src = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+  // stabilize 的「连续两帧一致」逻辑（prevKey/currKey 两帧比对）不再存在于
+  // 注入路径 —— 搜代码确认 stabilize 函数已删除或不再被点击路径调用。
+  assert.ok(!/function stabilize/.test(src), 'F2: stabilize（连续两帧门槛）已移除')
+  assert.ok(!/prevKey/.test(src) && !/currKey/.test(src), 'F2: 两帧比对状态已移除')
+  // 点击路径直接挂观察器。
+  assert.ok(/observer\.observe\(document\.body, \{ childList: true \}\)/.test(src) || /childList: true(, subtree: false)?\}\)/.test(src), 'F2: 点击路径在 body 上挂 childList 观察器')
+  passed++;console.log(`ok ${passed} - F2 no multi-frame stabilization gate on the injection path`)
+}
+
+// F3：位置与结构 —— 注入后按钮是 viewport.firstElementChild，官方项顺序不变。
+if (!process.env.DSHDR_MENU_CASE || process.env.DSHDR_MENU_CASE === 'F3') {
+  const dom = accountMenuDOM()
+  const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
+  await flush()
+  dom.open()
+  await flush()
+  const button = dom.injected()[0]
+  assert.equal(dom.menu.querySelector('button[role="menuitem"]'), button, 'F3: 重启是第一个 menuitem')
+  const officialItems = dom.menu.querySelectorAll('button[role="menuitem"]').filter(node => node !== button)
+  assert.deepEqual(officialItems.map(node => node.getAttribute('data-host-id')), ['settings','contact','signout'], 'F3: 官方项顺序不变')
+  h.dispose()
+  passed++;console.log(`ok ${passed} - F3 restart first, official order preserved`)
+}
+
+// F4：失效保护 —— 9 类场景（missing/empty/ambiguous/wrong-launcher/nested/
+// append-failure/observer-failure/footer-only/no-presentation）仍不插入、不抛错。
+// （既有 2070 行的 for 循环已覆盖 —— 这里换新注入路径重跑同一矩阵，不 fireTimer。）
+if (!process.env.DSHDR_MENU_CASE || process.env.DSHDR_MENU_CASE === 'F4') {
+  for (const scenario of ['missing', 'empty', 'ambiguous', 'wrong-launcher', 'nested', 'append-failure', 'observer-failure', 'footer-only', 'no-presentation']) {
+    const dom = accountMenuDOM(scenario)
+    const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
+    await flush()
+    const original = dom.originalSnapshot()
+    dom.open()
+    await flush()
+    // 菜单未出现的场景：发现观察器等到 500ms 超时才断开（F6 同语义）。
+    if (h.timerDelays().includes(500)) h.fireTimer(500)
+    assert.equal(dom.injected().length, 0, `F4 ${scenario}: 不插入`)
+    assert.equal(dom.originalSnapshot(), original, `F4 ${scenario}: 原页面不变`)
+    assert.equal(dom.observations().length, 0, `F4 ${scenario}: 无残留观察`)
+    h.dispose()
+  }
+  passed++;console.log(`ok ${passed} - F4 all 9 fail-closed scenarios skip injection without timers`)
+}
+
+// F5：观察器不残留 —— 插入成功后、菜单关闭后、卸载后，body 上的发现观察器
+// 归零（稳定观察器是另一个实例，计入 observations 但目标不同）。
+if (!process.env.DSHDR_MENU_CASE || process.env.DSHDR_MENU_CASE === 'F5') {
+  const dom = accountMenuDOM()
+  const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
+  await flush()
+  dom.open()
+  await flush()
+  assert.equal(dom.injected().length, 1)
+  // 插入成功后：发现观察器断开（其 500ms 超时定时器一并清除 —— timers 里
+  // 无 500 残留）；保留的 body childList 目标属于 probe 内的稳定观察器
+  // （监视菜单从 body 移除，设计内），至多一个。
+  assert.ok(!h.timerDelays().includes(500), 'F5: 发现观察器的超时定时器已清除')
+  const bodyObservers = dom.observations().filter(item => item.target === dom.document.body && item.options.childList && !item.options.subtree)
+  assert.ok(bodyObservers.length <= 1, `F5: body childList 目标至多 1 个（稳定观察器，实际 ${bodyObservers.length}）`)
+  dom.close()
+  assert.equal(dom.injected().length, 0)
+  assert.equal(dom.observations().length, 0, 'F5: 菜单关闭后全部观察器断开')
+  h.dispose()
+  assert.equal(dom.listenerCount(), 0, 'F5: 卸载后无残留监听')
+  passed++;console.log(`ok ${passed} - F5 discovery observer disconnected on success/close/dispose`)
+}
+
+// F6：超时 —— 点击后 500ms 内菜单未出现 → 放弃，不留观察器。
+if (!process.env.DSHDR_MENU_CASE || process.env.DSHDR_MENU_CASE === 'F6') {
+  const dom = accountMenuDOM('missing')
+  const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
+  await flush()
+  // 只点触发器（菜单永不出现 —— missing 场景 body 不加菜单）。
+  dom.clickTrigger()
+  // 挂上发现观察器 + 500ms 超时定时器。
+  assert.ok(h.timerDelays().includes(500), 'F6: 点击后安排 500ms 超时')
+  const bodyObservers = dom.observations().filter(item => item.target === dom.document.body)
+  assert.equal(bodyObservers.length, 1, 'F6: 窗口期内恰有一个 body 发现观察器')
+  h.fireTimer(500)
+  assert.equal(dom.observations().filter(item => item.target === dom.document.body).length, 0, 'F6: 超时后观察器断开')
+  assert.equal(dom.injected().length, 0, 'F6: 未插入')
+  h.dispose()
+  passed++;console.log(`ok ${passed} - F6 500ms timeout gives up and disconnects`)
+}
+
+// F7：既有账号菜单行为（重开幂等、关闭清理、偏好开关）在新路径下保持。
+if (!process.env.DSHDR_MENU_CASE || process.env.DSHDR_MENU_CASE === 'F7') {
+  const dom = accountMenuDOM()
+  const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
+  await flush()
+  dom.open()
+  await flush()
+  assert.equal(dom.injected().length, 1, 'F7: 首开注入')
+  dom.close()
+  assert.equal(dom.injected().length, 0, 'F7: 关闭清理')
+  dom.open()
+  await flush()
+  assert.equal(dom.injected().length, 1, 'F7: 重开幂等（一个全新注入）')
+  h.dispose()
+  assert.equal(dom.injected().length, 0, 'F7: 卸载清理')
+  passed++;console.log(`ok ${passed} - F7 reopen idempotence and cleanup preserved`)
+}
+
 console.log(`all ${passed} client regression checks passed`)
 
