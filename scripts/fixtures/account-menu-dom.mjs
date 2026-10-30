@@ -46,23 +46,28 @@ export function accountMenuDOM(scenario = 'normal') {
     removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn) }
   }
   body = new Node('body')
-  // 2026-10-30：模拟真实 MutationObserver 的自动微任务投递 —— body 的
-  // childList 变更（appendChild/insertBefore/remove 影响 body 的 children）后，
-  // 把变更排进微任务通知所有活跃观察者（真实浏览器行为；旧 fixture 只能手动 notify）。
+  // Mutation records belong only to observers already observing at mutation time.
+  // A listener installed later must never receive an earlier body append.
   const pendingMicrotask = { scheduled: false }
-  const scheduleBodyNotify = () => {
-    if (pendingMicrotask.scheduled) return
+  const pendingBodyRecords = new Map()
+  const scheduleBodyNotify = record => {
+    for (const observer of observers) {
+      if (!observer.targets.some(entry => entry.target === body && entry.options.childList)) continue
+      if (!pendingBodyRecords.has(observer)) pendingBodyRecords.set(observer,[])
+      pendingBodyRecords.get(observer).push(record)
+    }
+    if (!pendingBodyRecords.size || pendingMicrotask.scheduled) return
     pendingMicrotask.scheduled = true
     queueMicrotask(() => {
       pendingMicrotask.scheduled = false
-      notify([])
+      const batches=[...pendingBodyRecords];pendingBodyRecords.clear()
+      for (const [observer,records] of batches) if (observers.has(observer)) observer.callback(records)
     })
   }
   const rawBodyAppend = body.appendChild.bind(body)
-  body.appendChild = (node) => { const r = rawBodyAppend(node); scheduleBodyNotify(); return r }
+  body.appendChild = node => { const result=rawBodyAppend(node);scheduleBodyNotify({type:'childList',target:body,addedNodes:[node],removedNodes:[]});return result }
   const rawBodyInsert = body.insertBefore.bind(body)
-  body.insertBefore = (node, ref) => { const r = rawBodyInsert(node, ref); scheduleBodyNotify(); return r }
-  const rawBodyRemove = body.removeChild ? body.removeChild.bind(body) : null
+  body.insertBefore = (node,ref) => {const result=rawBodyInsert(node,ref);scheduleBodyNotify({type:'childList',target:body,addedNodes:[node],removedNodes:[]});return result}
   const head = new Node('head')
   const trigger = new Node('button')
   trigger.setAttribute('aria-haspopup', 'menu')
@@ -120,7 +125,7 @@ export function accountMenuDOM(scenario = 'normal') {
   class MutationObserver {
     constructor(callback) { this.callback = callback; this.targets = []; constructed++; observers.add(this) }
     observe(target, options) { this.targets.push({target, options}); if (scenario === 'observer-failure') throw new Error('simulated observer rejection') }
-    disconnect() { this.targets = []; observers.delete(this) }
+    disconnect() { this.targets = []; observers.delete(this);pendingBodyRecords.delete(this) }
   }
   function notify(records = []) { for (const observer of [...observers]) observer.callback(records) }
   function clickTrigger() { for (const fn of docListeners.get('click') ?? []) fn({target:trigger}) }

@@ -2907,5 +2907,7 @@ if (!process.env.DSHDR_FIRSTOPEN_CASE || process.env.DSHDR_FIRSTOPEN_CASE === 'G
   passed++;console.log(`ok ${passed} - G5 late menu arrival caught within the window`)
 }
 
+const {menuFirstOpen2Checks}=await import('./menu-firstopen2-regression.mjs')
+passed+=menuFirstOpen2Checks
 console.log(`all ${passed} client regression checks passed`)
 

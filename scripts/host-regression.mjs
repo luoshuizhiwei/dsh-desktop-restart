@@ -1278,3 +1278,25 @@ for(const [value,expected] of [[undefined,false],[false,false],[true,true],['tru
   for(const dispose of h.disposers)dispose()
   console.log('PASS REPAIR F1: asynchronous helper EACCES becomes HTTP500; failure recorded, lock released, host remains responsive')
 }
+{
+  const off=await boot({restartId:null})
+  const status=await off.request('/dsh-desktop-restart/api/status','GET')
+  assert.equal(status.body.menuTraceEnabled,false)
+  assert.equal((await off.request('/dsh-desktop-restart/api/prefs','POST','/dsh-desktop-restart/api/prefs?menuTrace=%7B%7D')).status,404)
+  for(const dispose of off.disposers)dispose()
+  files.set(stateDir+'\\menu-trace-control.json',JSON.stringify({enabled:true}))
+  const h=await boot({restartId:null})
+  assert.equal((await h.request('/dsh-desktop-restart/api/status','GET')).body.menuTraceEnabled,true)
+  for(let i=0;i<51;i++){
+    const data={id:'1000-'+i,startedAt:1000,endReason:'timeout',events:[{at:1000,type:'probe',outcome:'trigger-not-open',expanded:'false',connected:true,menus:0,menuitem:false,viewport:false,secret:'do-not-save'}]}
+    const response=await h.request('/dsh-desktop-restart/api/prefs','POST','/dsh-desktop-restart/api/prefs?menuTrace='+encodeURIComponent(JSON.stringify(data)))
+    assert.equal(response.status,200)
+  }
+  const raw=files.get(stateDir+'\\menu-trace-'+profileId+'.json')
+  const data=JSON.parse(raw)
+  assert.equal(data.sessions.length,50);assert.equal(data.sessions[0].id,'1000-1')
+  assert.ok(!raw.includes('do-not-save'))
+  files.delete(stateDir+'\\menu-trace-control.json')
+  for(const dispose of h.disposers)dispose()
+  console.log('PASS MENU TRACE: off by default; authenticated receiver opt-in; 50-session ring; extra fields discarded')
+}
