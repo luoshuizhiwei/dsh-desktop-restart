@@ -2580,4 +2580,7 @@ for(const raw of [null,'0','1','true','', 'broken']) {
 }
 const {uiCleanupChecks}=await import('./ui-cleanup-regression.mjs')
 passed+=uiCleanupChecks
+const {repairChecks}=await import('./repair-20261030-regression.mjs')
+passed+=repairChecks
 console.log(`all ${passed} client regression checks passed`)
+

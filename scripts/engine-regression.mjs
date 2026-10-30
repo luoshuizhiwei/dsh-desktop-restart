@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, utimesSync, lstatSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename, dirname, win32 } from 'node:path'
@@ -119,6 +120,13 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
     },
   }
   const fakeRequire = (specifier) => {
+    if (specifier === 'node:worker_threads') return {Worker:class extends EventEmitter {
+      constructor(_file,{workerData}) {super();if(authCookieFailure==='timeout')return;queueMicrotask(async()=>{
+        const result=await module.exports.checkAuthCookies(workerData.authCookieCheck,line=>this.emit('message',{note:line}))
+        this.emit('message',{result});this.emit('exit',0)
+      })}
+      async terminate(){notes.push('fixture Cookie worker terminated');this.emit('exit',1)}
+    }}
     if (specifier === 'node:child_process') return childProcess
     if (specifier === 'node:fs') return {
       readFileSync(file) {
@@ -156,13 +164,14 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
   fakeRequire.main = {}
   vm.runInNewContext(helperSource, {
     require: fakeRequire,
+    __filename: helperPath,
     module,
     exports: module.exports,
     process: fakeProcess,
     Buffer,
     Date: fakeDate,
     Promise,
-    setTimeout(callback, ms) { clock += ms; callback(); return { unref() {} } },
+    setTimeout(callback, ms) { if(ms===8000){if(authCookieFailure==='timeout')queueMicrotask(callback);return {unref(){}}}; clock += ms; callback(); return { unref() {} } },
     clearTimeout() {},
     queueMicrotask,
   }, { filename: helperPath })
@@ -484,3 +493,12 @@ assert.ok(!privateTransport.notes.join(' ').includes(targetExe))
 assert.ok(!privateTransport.notes.join(' ').includes('--user-data-dir'))
 assert.equal(privateTransport.launchEnvs[0].DSH_DESKTOP_RESTART_EXE,undefined)
 console.log('PASS BATCH2-14/15: basename handoff, child-only executable transport, redacted log, no private transport inherited by relaunched app')
+
+await import('./cookie-window-regression.mjs')
+
+const timedCookie=await runHelperScenario({foreignListener:false,startNewHost:true,authCookieFailure:'timeout'})
+assert.equal(timedCookie.cookieHealth.reason,'check-timeout')
+assert.equal(timedCookie.operation.result,'ok')
+assert.equal(timedCookie.launchEnvs.length,1)
+assert.ok(timedCookie.notes.findIndex(n=>n.includes('worker terminated'))<timedCookie.notes.findIndex(n=>n.includes('relaunched "')))
+console.log('PASS COOKIE BUDGET FLOW: timed-out optional check stops worker before app launch; restart still succeeds')

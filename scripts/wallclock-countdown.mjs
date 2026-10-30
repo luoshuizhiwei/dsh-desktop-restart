@@ -6,6 +6,7 @@
 // 本地快速迭代，CI/门禁走默认）。需要 --experimental-vm-modules；缺 flag 时
 // 给出明确指引而非晦涩的 TypeError。
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 
 if (typeof vm.SourceTextModule !== 'function') {
   console.error('wallclock-countdown: 需要 --experimental-vm-modules（vm.SourceTextModule 不可用）。')
@@ -87,7 +88,7 @@ const fsFake = {
 }
 
 const nodeModules = {
-  'node:child_process': { spawn() { spawned += 1; return { pid: 901, unref() {} } } },
+  'node:child_process': { spawn() { spawned += 1; const child=new EventEmitter();child.pid=901;child.unref=()=>{};queueMicrotask(()=>child.emit('spawn'));return child } },
   'node:crypto': { createHash, randomUUID: () => 'wallclock-' + Math.random() },
   'node:fs': fsFake,
   'node:os': { homedir: () => home, tmpdir: () => `${home}\\Temp` },

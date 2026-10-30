@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import * as nativeFs from 'node:fs'
@@ -39,7 +40,7 @@ const makeMarker = (restartId = 'restart-once', sessions = ['session-private-id'
   requestedAt: new Date(Date.now() - 1000).toISOString(), sessions,
 })
 
-async function boot({ hostCode = code, noticeFactory = createNoticeStore, noticeOptions = {}, fsOverride = null, sweepImpl = null, profile = profileDir, restartId = 'restart-once', authThrows = false, deferredImports = null, sweepResult = { scanned: 0, candidates: [], preview: { files: 0, bytes: 0 }, skipped: [], partial: false, prefiltered: 0, removed: [], failed: [], error: null }, processList = [], processQueryFails = false, clock = Date, delivery = null, wakeAvailable = true, commandsEnabled = false, agentsList = () => [], knownTasks = true, fakeHelper = false, deadLockPid = null, entryConfig = {} } = {}) {
+async function boot({ hostCode = code, noticeFactory = createNoticeStore, noticeOptions = {}, fsOverride = null, sweepImpl = null, profile = profileDir, restartId = 'restart-once', authThrows = false, deferredImports = null, sweepResult = { scanned: 0, candidates: [], preview: { files: 0, bytes: 0 }, skipped: [], partial: false, prefiltered: 0, removed: [], failed: [], error: null }, processList = [], processQueryFails = false, clock = Date, delivery = null, wakeAvailable = true, commandsEnabled = false, agentsList = () => [], knownTasks = true, fakeHelper = false, spawnError = null, deadLockPid = null, entryConfig = {} } = {}) {
   let processQueryCalls = 0
   let spawned = 0
   const timers = []
@@ -108,7 +109,7 @@ async function boot({ hostCode = code, noticeFactory = createNoticeStore, notice
   }
   const pathApi = Object.fromEntries(['basename', 'dirname', 'join'].map((name) => [name, path.win32[name]]))
   const nodeModules = {
-    'node:child_process': { spawn() { fakeSpawnCalls += 1; spawned += 1; if (fakeHelper) return { pid: 901, unref() {} }; throw new Error('real process creation forbidden') } },
+    'node:child_process': { spawn() { fakeSpawnCalls += 1; spawned += 1; if (fakeHelper) { const child=new EventEmitter();child.pid=spawnError?undefined:901;child.unref=()=>{};queueMicrotask(()=>spawnError?child.emit('error',Object.assign(new Error('fixture spawn denied'),{code:spawnError})):child.emit('spawn'));return child }; throw new Error('real process creation forbidden') } },
     'node:crypto': { createHash, randomUUID: () => `generated-${Math.random()}` },
     'node:fs': fsOverride ?? fsFake,
     'node:os': { homedir: () => home, tmpdir: () => `${home}\\Temp` },
@@ -1262,4 +1263,18 @@ for(const [value,expected] of [[undefined,false],[false,false],[true,true],['tru
   assert.equal(result.body.entries.headerRefresh,expected)
   for(const dispose of h.disposers)dispose()
   console.log('PASS UI CLEANUP HOST: headerRefresh config='+String(value)+' => '+expected)
+}
+
+{
+  const h=await boot({restartId:null,fakeHelper:true,spawnError:'EACCES'})
+  const response=await h.request('/dsh-desktop-restart/api/restart','POST','/dsh-desktop-restart/api/restart?force=1&now=1')
+  assert.equal(response.status,500)
+  assert.match(response.body.error,/fixture spawn denied/)
+  const api=h.module.namespace.__test
+  assert.equal(files.has(api.RESTART_LOCK),false,'failed asynchronous spawn releases owned lock')
+  const status=(await h.request('/dsh-desktop-restart/api/status','GET')).body
+  assert.equal(status.restartBusy,false)
+  assert.equal(status.restartOp.reason,'helper-spawn-failed')
+  for(const dispose of h.disposers)dispose()
+  console.log('PASS REPAIR F1: asynchronous helper EACCES becomes HTTP500; failure recorded, lock released, host remains responsive')
 }

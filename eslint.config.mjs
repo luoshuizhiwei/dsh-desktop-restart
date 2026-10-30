@@ -13,9 +13,10 @@ export default [
       'no-unreachable':'error',
     },
   },
-  {files:['lib/**/*.cjs'],languageOptions:{sourceType:'commonjs'}},
+  {files:['lib/**/*.cjs'],languageOptions:{sourceType:'commonjs',globals:{__filename:'readonly'}}},
   {
     files:['eslint.config.mjs','scripts/critical-behavior.mjs','scripts/fixtures/client-harness.mjs','scripts/fixtures/source-text-checks.mjs'],
     rules:{indent:['error',2,{SwitchCase:1}]},
   },
 ]
+
