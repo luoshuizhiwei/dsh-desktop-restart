@@ -1,3 +1,4 @@
+import {sourceTextChecks} from './fixtures/source-text-checks.mjs'
 /**
  * dsh-desktop-restart 的离线冒烟测试。
  *
@@ -16,6 +17,7 @@
  */
 
 import assert from 'node:assert/strict'
+import {forceContract,waitCancelContract,rollbackContract} from './critical-behavior.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -36,10 +38,13 @@ const require = createRequire(import.meta.url)
 const helper = require(helperPath)
 
 let passed = 0
+let sourceTextGroups = 0
 let skippedWindowsOnly = 0
 /** 跑一个断言块并计数。 */
 async function ok(name, fn) {
+  const before = sourceTextChecks.count()
   await fn()
+  if(sourceTextChecks.count()>before)sourceTextGroups++
   passed += 1
   console.log('  ok   ' + name)
 }
@@ -134,6 +139,7 @@ const commandsService = {
   },
 }
 const ctx = {
+  get: name=>name === "connection" ? {requestRejection:()=>null} : undefined,
   effect: (fn) => {
     const dispose = fn()
     return typeof dispose === 'function' ? dispose : undefined
@@ -391,6 +397,36 @@ await ok('守卫：服务形状意外时也不抛异常', async () => {
   }
 })
 
+await ok('守卫：agents 正常而 jobs 列表不可判读时保持未知，不能冒充空闲', async () => {
+  for (const malformed of [null, undefined, {}, 'unexpected']) {
+    const snapshot = __test.taskSnapshot({get:name=>name==='agents'?{list:()=>[]}:{list:()=>malformed}})
+    assert.equal(snapshot.known,false)
+  }
+})
+
+await ok('helper：进程在二次核验前退出，空身份比较安全拒绝', async () => {
+  const expected={pid:123,parentPid:12,path:'C:\\DSH\\app.exe',createdAt:new Date().toISOString()}
+  assert.equal(helper.sameProcessIdentity(expected,null),false)
+  assert.equal(helper.sameProcessIdentity(null,expected),false)
+})
+
+await ok('诊断：保留 helper 实际写出的 portWait 阶段耗时', async () => {
+  const records=new Map(),directory='memory-notice-fixture'
+  const io={
+    mkdirSync(){},
+    writeFileSync(file,text){records.set(file,text)},
+    readFileSync(file){return records.get(file)},
+    readdirSync(){return [...records.keys()].map(file=>file.split(/[\\/]/u).at(-1))},
+    existsSync:file=>records.has(file),
+    statSync(file){if(file===directory||records.has(file))return {mtimeMs:1,ctimeMs:1,size:records.get(file)?.length??records.size};const error=new Error('missing');error.code='ENOENT';throw error},
+  }
+  const store=helper.createNoticeStore({dir:directory,profileId:'stage-fixture',io,send:()=>({status:'pending'})})
+  store.ensure({id:'stage-check',result:'failed',reason:'port-held',stages:{verify:10,stop:20,portWait:30000}})
+  const record=JSON.parse([...records].find(([file])=>file.endsWith('-failed.json'))[1])
+  assert.equal(record.details.stages.portWait,30000)
+  assert.equal(Object.hasOwn(record.details.stages,'port'),false)
+})
+
 await ok('守卫：正在生成的智能体算「有任务在跑」', async () => {
   const snapshot = __test.taskSnapshot(guardCtx({
     agents: [{ id: 'a1', status: 'running', inbox: { nextTurn: [], nextStep: [] } }],
@@ -507,9 +543,9 @@ await ok('守卫：安装中的硬拦排在 force 之前（force=1 也绕不过�
   const source = readFileSync(join(libDir, 'index.js'), 'utf8')
   const blockedAt = source.indexOf('if (installing.blocked)')
   const forceAt = source.indexOf('if (options.force !== true)')
-  assert.ok(blockedAt > 0, '必须有「插件正在安装/更新」的硬拦分支')
+  sourceTextChecks.ok("T097", blockedAt > 0, '必须有「插件正在安装/更新」的硬拦分支')
   assert.ok(forceAt > 0, '应当保留 force 守卫')
-  assert.ok(blockedAt < forceAt, '硬拦必须排在 force 守卫之前，否则 ?force=1 会绕过它')
+  sourceTextChecks.ok("T098", blockedAt < forceAt, '硬拦必须排在 force 守卫之前，否则 ?force=1 会绕过它')
 })
 
 await ok('守卫：profile 目录必须同时有 package.json 与 node_modules', async () => {
@@ -560,14 +596,14 @@ await ok('守卫：只有 force=1 才算「已确认」', async () => {
 })
 
 await ok('等待：wait=1 / cancelWait=1 参数解析（B 项）', async () => {
-  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart?wait=1'), true)
-  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart?force=1&wait=1'), true)
-  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart?wait=0'), false)
+  assert.equal(__test.shouldWaitForIdle('/dsh-desktop-restart/api/restart?wait=1'), true)
+  assert.equal(__test.shouldWaitForIdle('/dsh-desktop-restart/api/restart?force=1&wait=1'), true)
+  assert.equal(__test.shouldWaitForIdle('/dsh-desktop-restart/api/restart?wait=0'), false)
   // 2026-10-22：默认改为「先等空闲」，只有 now=1 才跳过
-  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart'), true, '默认必须等待空闲')
-  assert.equal(__test.waitRequested(undefined), true, '没有 URL 也按默认等待')
-  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart?now=1'), false, 'now=1 才立即执行')
-  assert.equal(__test.waitRequested('/dsh-desktop-restart/api/restart?force=1'), true, 'force 不等于跳过等待')
+  assert.equal(__test.shouldWaitForIdle('/dsh-desktop-restart/api/restart'), true, '默认必须等待空闲')
+  assert.equal(__test.shouldWaitForIdle(undefined), true, '没有 URL 也按默认等待')
+  assert.equal(__test.shouldWaitForIdle('/dsh-desktop-restart/api/restart?now=1'), false, 'now=1 才立即执行')
+  assert.equal(__test.shouldWaitForIdle('/dsh-desktop-restart/api/restart?force=1'), true, 'force 不等于跳过等待')
   assert.equal(__test.cancelWaitRequested('/dsh-desktop-restart/api/restart?cancelWait=1'), true)
   assert.equal(__test.cancelWaitRequested('/dsh-desktop-restart/api/restart'), false)
   assert.equal(__test.cancelWaitRequested(undefined), false)
@@ -598,7 +634,7 @@ await ok('重启回执：nonce、profile、实例与有效期匹配才接受，�
   assert.equal(__test.restartReceipt(marker, 'nonce', 'profile', 'instance', now + 86_400_000), null)
   const receipt = __test.restartReceipt(marker, 'nonce', 'profile', 'instance', now)
   assert.ok(receipt !== null)
-  assert.equal(receipt.downtimeMs, 60_000, '停机时间 = 现在 - 标记时间')
+  assert.equal(receipt.downtimeMs, 60_000, '交接耗时 = 现在 - 标记时间')
 })
 
 await ok('平台：非 Windows 在入口说明白，而不是走到一半晦涩失败（C 项）', async () => {
@@ -672,11 +708,11 @@ function ctxWithConnection(connection, config) {
   return own
 }
 
-await ok('平台门：没有 connection 服务时退回自检（不拦、不报错）', async () => {
-  const fence = __test.platformFence(ctx, makeReq('POST'))
+await ok('平台门：没有 connection 服务时明确不可用', async () => {
+  const fence = __test.platformFence({get:()=>undefined}, makeReq('POST'))
   assert.equal(fence.available, false)
   assert.equal(fence.verdict, null)
-  assert.equal(fence.error, null)
+  assert.match(fence.error,/缺少平台鉴权服务/)
 
   const bare = __test.platformFence(undefined, makeReq('POST'))
   assert.equal(bare.available, false, '取不到 ctx 也不能抛')
@@ -824,20 +860,19 @@ await ok('清理：真删目录，前缀不对的、不是目录的都不动', a
   }
   writeFileSync(asFile, 'x')
   // 把「启动时刻」放到未来、最小年龄放开：两条守卫本身在上面单独验，
-  // 这里要验的是「真的会去删、而且只删该删的」。
+  // 这里验证候选被统计，但所有目录都保留。
   //
   // 时间戳由测试自己固定注入（2026-10-20 的两轮 CI 教训）：Linux 上
   // stat().birthtime 常不可用（回退的 ctime 语义也不同），拿真实文件系统
   // 的时间戳喂判定，等于把「该不该删」挂在平台差异上 —— Windows 全绿、
   // Linux 随缘。判定逻辑交给上面的纯函数用例；这里用「把 mtime/创建时间
-  // 拨到很久以前」保证目录必然被判为孤儿，然后专心验证「删得掉、删得对」。
+  // 拨到很久以前」保证目录必然被判为孤儿，然后专心验证「只预览、不删除」。
   const LONG_AGO = 1_000_000_000_000
   const OLD = Date.now() - LONG_AGO
   const logLines = []
   const result = await sweepOrphanSnapshots({
     tempRoot: root,
     startedAtMs: Date.now() + 60_000,
-    ownerCheck: { known: true, activeHosts: [] },
     minAgeMs: 0,
     log: (line) => logLines.push(line),
     // 注入时间戳来源：测试专用钩子，生产路径不传它。字段名与 node:fs 的
@@ -857,11 +892,11 @@ await ok('清理：真删目录，前缀不对的、不是目录的都不动', a
     },
   })
   const scene = () => JSON.stringify({ scanned: result.scanned, removed: result.removed, failed: result.failed, logLines })
-  assert.deepEqual(result.removed, [`${SNAPSHOT_PREFIX}doomed`], `删除结果不符：${scene()}`)
+  assert.deepEqual(result.removed, [], `预览不得删除：${scene()}`)
   assert.equal(result.failed.length, 0, `有目录删失败：${scene()}`)
-  assert.equal(result.bytes, 2048, `字节数不符：${scene()}`)
-  assert.equal(result.files, 1, `文件数不符：${scene()}`)
-  assert.equal(existsSync(doomed), false, '该删的必须删掉')
+  assert.equal(result.bytes, 0, `字节数不符：${scene()}`)
+  assert.equal(result.files, 0, `文件数不符：${scene()}`)
+  assert.equal(existsSync(doomed), true, '候选必须保留，只做预览')
   assert.equal(existsSync(unrelated), true, '不是快照前缀的目录一个都不该碰')
   assert.equal(existsSync(asFile), true, '同前缀的文件不动')
 })
@@ -1044,49 +1079,34 @@ await ok('client bundle：factory id 必须等于 package.json 的包名', async
 })
 
 await ok('client bundle：确认态与警告态是两条不同的路（force 只在警告态发出）', async () => {
-  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /\?force=1/u, '强制重启必须带 ?force=1')
-  assert.match(source, /WARN_ARM_MS/u, '警告态必须有防连点冷却')
-  assert.match(source, /result\.guard === true/u, '必须识别宿主半的守卫响应')
+  await forceContract()
+  await rollbackContract()
 })
 
 await ok('client bundle：等空闲再重启 —— wait/cancelWait 走通、按钮只在守卫响着时出现（B 项）', async () => {
-  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /wait=1/u, '等待请求必须带 wait=1')
-  assert.match(source, /cancelWait=1/u, '取消请求必须带 cancelWait=1')
-  assert.match(source, /function WaitButton/u, '必须有等待按钮组件')
-  // 按钮出现条件：守卫响着（guardHint 非空）或已挂起等待；非桌面版不出现。
-  const start = source.indexOf('function WaitButton')
-  const fn = source.slice(start, source.indexOf('\n\t\t\t}', start) + 4)
-  assert.ok(fn.length > 200, `WaitButton 函数体要完整截取到（现在 ${String(fn.length)} 字符）`)
-  assert.match(fn, /guardHint === ""/u, '要判断守卫是否响着')
-  assert.match(fn, /desktop === false.*?return null/us, '非桌面版不显示')
-  // 等待与取消都换状态行而不进 done（等待不是「已排程重启」）。
-  assert.match(source, /result\.waiting === true/u, '客户端要识别宿主的等待挂起响应')
-  assert.match(source, /waitForIdle/u, 'useRestart 必须暴露 waitForIdle')
-  assert.match(source, /cancelWait/u, 'useRestart 必须暴露 cancelWait')
+  await waitCancelContract()
 })
 
 await ok('client bundle：守卫提示由结构化计数按语言组句（E 项）', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /function guardHintOf/u, '必须有组句函数')
+  sourceTextChecks.match("T001", source, /function guardHintOf/u, '必须有组句函数')
   const start = source.indexOf('function guardHintOf')
   const fn = source.slice(start, source.indexOf('\n\t\t}', start) + 3)
-  assert.ok(fn.length > 300, `guardHintOf 函数体要完整截取到（现在 ${String(fn.length)} 字符）`)
+  sourceTextChecks.ok("T099", fn.length > 300, `guardHintOf 函数体要完整截取到（现在 ${String(fn.length)} 字符）`)
   // 有计数用计数组句；没有计数才退回宿主 reasons（宁可中文原文也不编话）。
-  assert.match(fn, /tasks\.turns/u, '要用宿主给的结构化计数（turns）')
-  assert.match(fn, /installs\.running/u, '要用宿主给的结构化计数（installs）')
-  assert.match(fn, /guard\.reasons.*join/us, '没有计数时退回宿主原句')
+  sourceTextChecks.match("T002", fn, /tasks\.turns/u, '要用宿主给的结构化计数（turns）')
+  sourceTextChecks.match("T003", fn, /installs\.running/u, '要用宿主给的结构化计数（installs）')
+  sourceTextChecks.match("T004", fn, /guard\.reasons.*join/us, '没有计数时退回宿主原句')
 })
 
 await ok('client bundle：安装中的硬拦不弹「仍要重启」，也不说「仍可重启」', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   const blockedAt = source.indexOf('result.blocked === true')
   const guardAt = source.indexOf('result.guard === true')
-  assert.ok(blockedAt > 0, '必须识别宿主半的硬拦响应')
-  assert.ok(blockedAt < guardAt, '硬拦要排在守卫确认之前，否则会弹一个勾选了也没用的确认框')
-  assert.match(source, /guardSuffix/u, '守卫提示的出路必须按 blocked 分开写')
-  assert.match(source, /blockedSuffix/u, '硬拦时必须说清「装完之前不能重启」（字典键）')
+  sourceTextChecks.ok("T100", blockedAt > 0, '必须识别宿主半的硬拦响应')
+  sourceTextChecks.ok("T101", blockedAt < guardAt, '硬拦要排在守卫确认之前，否则会弹一个勾选了也没用的确认框')
+  sourceTextChecks.match("T005", source, /guardSuffix/u, '守卫提示的出路必须按 blocked 分开写')
+  sourceTextChecks.match("T006", source, /blockedSuffix/u, '硬拦时必须说清「装完之前不能重启」（字典键）')
 })
 
 await ok('client bundle：字典 zh/en 两表键一致，代码引用的键全部存在（issue #1）', async () => {
@@ -1118,9 +1138,9 @@ await ok('client bundle：字典 zh/en 两表键一致，代码引用的键全�
   // inject: ["slots", "locale"] 这类服务名数组也会被这个形状误抓
   // （0.4.1 首跑就这么红的 —— 服务声明不是字典键）。
   const entryBlock = /const ENTRY_LABELS = \{([\s\S]*?)\n\t\t\}/.exec(source)
-  assert.ok(entryBlock, '必须保留 ENTRY_LABELS 表（四个入口的标题/说明键）')
+  assert.ok(entryBlock, '必须保留 ENTRY_LABELS 表（六个开关的标题/说明键）')
   const entryKeys = [...entryBlock[1].matchAll(/\["([A-Za-z0-9_]+)",\s*"([A-Za-z0-9_]+)"\]/g)].flatMap((m) => [m[1], m[2]])
-  assert.ok(entryKeys.length === 8, `ENTRY_LABELS 应有 4 行 × 2 键（现在 ${String(entryKeys.length)}）`)
+  assert.ok(entryKeys.length === 12, `ENTRY_LABELS 应有 6 行 × 2 键（现在 ${String(entryKeys.length)}）`)
   const entryMissing = entryKeys.filter((k) => !zhSet.has(k))
   assert.deepEqual(entryMissing, [], `ENTRY_LABELS 引用了不存在的键：${entryMissing.join(', ')}`)
   for (const key of ['defaultHint', 'blockedFallback', 'guardFallback', 'sweepLastPrefix', 'sweepJustNow', 'extrasSubtitle']) {
@@ -1128,14 +1148,14 @@ await ok('client bundle：字典 zh/en 两表键一致，代码引用的键全�
   }
   // 设置分区里两件「与重启无关」的顺手功能合并进同一个分类（2026-10-20 用户
   // 要求合并；同日第二次要求：标题只写「附带功能」，不特意标明与重启的关系）。
-  assert.match(source, /t\("extrasSubtitle"\)/u, '两件附带功能应共用同一个分类标题')
-  assert.doesNotMatch(source, /sweepSubtitle|tidySubtitle/u, '旧的分开小标题应已移除')
-  assert.ok(
-    /extrasSubtitle: "附带功能",/u.test(source),
+  sourceTextChecks.match("T007", source, /t\("extrasSubtitle"\)/u, '两件附带功能应共用同一个分类标题')
+  sourceTextChecks.doesNotMatch("T008", source, /sweepSubtitle|tidySubtitle/u, '旧的分开小标题应已移除')
+  sourceTextChecks.ok(
+    "T102", /extrasSubtitle: "附带功能",/u.test(source),
     '中文标题应就是「附带功能」四个字（不带括号说明）',
   )
-  assert.ok(
-    /extrasSubtitle: "Bundled extras",/u.test(source),
+  sourceTextChecks.ok(
+    "T103", /extrasSubtitle: "Bundled extras",/u.test(source),
     '英文标题不带 "unrelated to restarting" 括号说明',
   )
 })
@@ -1143,19 +1163,19 @@ await ok('client bundle：字典 zh/en 两表键一致，代码引用的键全�
 await ok('client bundle：locale 服务可用则用之，不可用则按浏览器语言兜底', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   // 注册进官方 locale（语言跟随主应用）；注册失败/服务缺席时保留兜底 —— 不能起不来。
-  assert.match(source, /locale\.register\(LOCALE_NS, DICT\)/u, '必须把字典注册进官方 locale 服务')
-  assert.match(source, /locale\.bind\(LOCALE_NS\)/u, '必须用官方 bind 拿翻译函数')
-  assert.match(source, /navigator\.language/u, '兜底要按浏览器语言挑 zh/en')
+  sourceTextChecks.match("T009", source, /locale\.register\(LOCALE_NS, DICT\)/u, '必须把字典注册进官方 locale 服务')
+  sourceTextChecks.match("T010", source, /locale\.bind\(LOCALE_NS\)/u, '必须用官方 bind 拿翻译函数')
+  sourceTextChecks.match("T011", source, /navigator\.language/u, '兜底要按浏览器语言挑 zh/en')
   // 接入约定（0.4.0 的教训，2026-10-20 实测）：服务必须在导出的 inject 数组里
   // 声明、经 ctx.locale 访问 —— 只写 ctx.get("locale") 拿到 undefined，代码
   // 静默落到浏览器语言兜底，主应用切英文也不管用。官方插件全库 350+ 处都是
   // inject 声明的写法，ctx.get("locale") 仅 1 处例外。
-  assert.match(
-    source,
+  sourceTextChecks.match(
+    "T012", source,
     /inject:\s*\["slots",\s*"locale"\]/u,
     '导出的 inject 数组必须声明 "locale"，否则服务根本注入不进来（0.4.0 因此失效）',
   )
-  assert.match(source, /ctx\.locale/u, '必须经 ctx.locale 访问服务（inject 声明的注入方式）')
+  sourceTextChecks.match("T013", source, /ctx\.locale/u, '必须经 ctx.locale 访问服务（inject 声明的注入方式）')
   // 注入声明
   const pkg = JSON.parse(readFileSync(join(libDir, '..', 'package.json'), 'utf8'))
   assert.ok(
@@ -1182,9 +1202,9 @@ await ok('client bundle：locale 服务可用则用之，不可用则按浏览�
 
 await ok('client bundle：自己注入样式，且重复加载不重复插入', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /typeof document !== "undefined"/u, '没有 document 的环境（测试 / SSR）不能炸')
-  assert.match(source, /querySelector\("style\[data-plugin-css=/u, '重复加载时不能重复插入同一个 style')
-  assert.match(source, /\.dshdr-/u, '选择器必须自带前缀，不能影响别的插件')
+  sourceTextChecks.match("T014", source, /typeof document !== "undefined"/u, '没有 document 的环境（测试 / SSR）不能炸')
+  sourceTextChecks.match("T015", source, /querySelector\("style\[data-plugin-css=/u, '重复加载时不能重复插入同一个 style')
+  sourceTextChecks.match("T016", source, /\.dshdr-/u, '选择器必须自带前缀，不能影响别的插件')
 })
 
 await ok('client bundle：标题栏按钮照抄官方座位里的真实按钮（ui-jobs JobListAction）', async () => {
@@ -1200,10 +1220,10 @@ await ok('client bundle：标题栏按钮照抄官方座位里的真实按钮（
     '--dsw-alias-label-tertiary',
     '@container (width<=540px)',
   ]) {
-    assert.ok(source.includes(token), `缺少与官方标题栏动作一致的 ${token}`)
+    sourceTextChecks.ok("T104", source.includes(token), `缺少与官方标题栏动作一致的 ${token}`)
   }
-  assert.match(
-    source,
+  sourceTextChecks.match(
+    "T017", source,
     /\.dshdr-trigger:hover:not\(:disabled\),\.dshdr-trigger:focus-visible\{color:var\(--dsw-alias-label-secondary/u,
     '官方 hover / focus 只把字色提到 label-secondary，不加任何底色',
   )
@@ -1211,27 +1231,27 @@ await ok('client bundle：标题栏按钮照抄官方座位里的真实按钮（
 
 await ok('client bundle：忙碌时有旋转动画，并尊重系统的减少动效', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /@keyframes dshdr-spin/u)
-  assert.match(source, /data-busy=1/u)
-  assert.match(source, /prefers-reduced-motion:reduce/u)
+  sourceTextChecks.match("T018", source, /@keyframes dshdr-spin/u)
+  sourceTextChecks.match("T019", source, /data-busy=1/u)
+  sourceTextChecks.match("T020", source, /prefers-reduced-motion:reduce/u)
 })
 
 await ok('client bundle：状态色用官方 token 名（warn，不是 warning）', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /data-phase=warn\]\{color:var\(--dsw-alias-state-warn-primary/u, '会打断工作用官方的 warn 色')
-  assert.match(source, /data-phase=error\]\{color:var\(--dsw-alias-state-error-primary/u, '失败才是红色')
-  assert.match(source, /data-phase=confirm\]\{color:var\(--dsw-alias-label-primary/u, '普通确认只做中性强调')
-  assert.ok(!source.includes('--dsw-alias-state-warning-primary'), '官方没有 state-warning-primary 这个 token')
-  assert.ok(!source.includes('--dsw-alias-interactive-bg-hover-warning'), '这个 token 也不存在，别自造')
-  assert.match(source, /:active:not\(:disabled\)\{background:var\(--dsw-alias-interactive-bg-active/u, '按下态用官方 active token')
-  assert.match(source, /var\(--dsw-focus-ring-width/u, '焦点环用官方 token')
+  sourceTextChecks.match("T021", source, /data-phase=warn\]\{color:var\(--dsw-alias-state-warn-primary/u, '会打断工作用官方的 warn 色')
+  sourceTextChecks.match("T022", source, /data-phase=error\]\{color:var\(--dsw-alias-state-error-primary/u, '失败才是红色')
+  sourceTextChecks.match("T023", source, /data-phase=confirm\]\{color:var\(--dsw-alias-label-primary/u, '普通确认只做中性强调')
+  sourceTextChecks.ok("T105", !source.includes('--dsw-alias-state-warning-primary'), '官方没有 state-warning-primary 这个 token')
+  sourceTextChecks.ok("T106", !source.includes('--dsw-alias-interactive-bg-hover-warning'), '这个 token 也不存在，别自造')
+  sourceTextChecks.match("T024", source, /:active:not\(:disabled\)\{background:var\(--dsw-alias-interactive-bg-active/u, '按下态用官方 active token')
+  sourceTextChecks.match("T025", source, /var\(--dsw-focus-ring-width/u, '焦点环用官方 token')
 })
 
 await ok('client bundle：状态变化对读屏可见（aria-live / aria-label / aria-busy）', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /"aria-live": "polite"/u)
-  assert.match(source, /"aria-label": ariaLabelOf\(action\)/u)
-  assert.match(source, /"aria-busy"/u)
+  sourceTextChecks.match("T026", source, /"aria-live": "polite"/u)
+  sourceTextChecks.match("T027", source, /"aria-label": ariaLabelOf\(action\)/u)
+  sourceTextChecks.match("T028", source, /"aria-busy"/u)
 })
 
 await ok('client bundle：aria-label 绝不放动态提示（皮肤插件会把它当可见标题）', async () => {
@@ -1248,10 +1268,10 @@ await ok('client bundle：aria-label 绝不放动态提示（皮肤插件会把�
   assert.doesNotMatch(body, /message/u, 'aria-label 不得包含结果消息')
   assert.doesNotMatch(body, /ariaWithGuard/u, '拼长句的那个键已废弃')
   // 提示改走 aria-describedby，且目标是一段视觉隐藏文本
-  assert.match(source, /function ariaDescriptionOf/u, '必须有独立的详细提示函数')
-  assert.match(source, /"aria-describedby": described === "" \? undefined : hintId/u, '两个常驻按钮都要接 describedby')
-  assert.match(source, /className: "dshdr-sr-only"/u, 'describedby 的目标必须是视觉隐藏文本')
-  assert.match(source, /\.dshdr-sr-only\{position:absolute;[^}]*clip:rect/u, 'sr-only 样式必须真的把它藏掉')
+  sourceTextChecks.match("T029", source, /function ariaDescriptionOf/u, '必须有独立的详细提示函数')
+  sourceTextChecks.match("T030", source, /"aria-describedby": described === "" \? undefined : hintId/u, '两个常驻按钮都要接 describedby')
+  sourceTextChecks.match("T031", source, /className: "dshdr-sr-only"/u, 'describedby 的目标必须是视觉隐藏文本')
+  sourceTextChecks.match("T032", source, /\.dshdr-sr-only\{position:absolute;[^}]*clip:rect/u, 'sr-only 样式必须真的把它藏掉')
   // 提示不许进按钮的 textContent（皮肤插件在 aria-label 缺失时也会读它）
   const headerAt = source.indexOf('function HeaderRestartButton')
   const headerBody = source.slice(headerAt, source.indexOf('function SettingsRestartRow', headerAt))
@@ -1287,55 +1307,55 @@ await ok('client bundle：主区面板按同座位（任务看板）的页面版
   // 2026-10-20 用户反馈：点左上角进去那页「布局有问题」——内容是 32/24 内边距
   // 的 560px 窄栏浮在满高主区里。原生版式（任务看板 [data-dsh-taskboard-view]）
   // 是：铺满高度 + bg-base + 14/16 内边距 + 标题 16px/700 与右侧工具同一行。
-  assert.match(source, /\.dshdr-panel\{[^}]*height:100%[^}]*\}/u, '面板要铺满主区高度')
-  assert.match(source, /\.dshdr-panel\{[^}]*background:var\(--dsw-alias-bg-base/u, '面板要自带 bg-base，别让底色透出')
-  assert.match(source, /\.dshdr-panel\{[^}]*padding:14px 16px 16px/u, '内边距要与任务看板一致（14/16）')
-  assert.doesNotMatch(source, /\.dshdr-panel\{[^}]*max-width:560px/u, '不该再用 560px 窄栏')
-  assert.doesNotMatch(source, /\.dshdr-panel\{[^}]*margin:0 auto/u, '窄栏居中会让内容浮在页面中间')
-  assert.match(source, /\.dshdr-panel-title\{[^}]*font-weight:700/u, '标题字重照原生（700，不是 500）')
+  sourceTextChecks.match("T033", source, /\.dshdr-panel\{[^}]*height:100%[^}]*\}/u, '面板要铺满主区高度')
+  sourceTextChecks.match("T034", source, /\.dshdr-panel\{[^}]*background:var\(--dsw-alias-bg-base/u, '面板要自带 bg-base，别让底色透出')
+  sourceTextChecks.match("T035", source, /\.dshdr-panel\{[^}]*padding:14px 16px 16px/u, '内边距要与任务看板一致（14/16）')
+  sourceTextChecks.doesNotMatch("T036", source, /\.dshdr-panel\{[^}]*max-width:560px/u, '不该再用 560px 窄栏')
+  sourceTextChecks.doesNotMatch("T037", source, /\.dshdr-panel\{[^}]*margin:0 auto/u, '窄栏居中会让内容浮在页面中间')
+  sourceTextChecks.match("T038", source, /\.dshdr-panel-title\{[^}]*font-weight:700/u, '标题字重照原生（700，不是 500）')
   // 标题与状态同一行
-  assert.match(source, /\.dshdr-panel-header\{[^}]*align-items:center/u, '标题行要横向排列')
-  assert.match(source, /\.dshdr-panel-status\{[^}]*margin-left:auto/u, '状态词靠右')
-  assert.match(source, /function statusOf\(action\)/u, '要有状态词函数')
+  sourceTextChecks.match("T039", source, /\.dshdr-panel-header\{[^}]*align-items:center/u, '标题行要横向排列')
+  sourceTextChecks.match("T040", source, /\.dshdr-panel-status\{[^}]*margin-left:auto/u, '状态词靠右')
+  sourceTextChecks.match("T041", source, /function statusOf\(action\)/u, '要有状态词函数')
   // 说明 / 警告 / 结果都是卡片，而不是一行灰字
-  assert.match(source, /\.dshdr-panel-warn\{[^}]*border:1px solid[^}]*border-radius:12px/u, '警告块要卡片化')
-  assert.match(source, /\.dshdr-panel-note\{[^}]*border:1px solid[^}]*border-radius:12px/u, '结果块要卡片化')
+  sourceTextChecks.match("T042", source, /\.dshdr-panel-warn\{[^}]*border:1px solid[^}]*border-radius:12px/u, '警告块要卡片化')
+  sourceTextChecks.match("T043", source, /\.dshdr-panel-note\{[^}]*border:1px solid[^}]*border-radius:12px/u, '结果块要卡片化')
   // 守卫提示单独成块，不再拼进说明里
-  assert.match(source, /const guardWarn = action\.guardHint === ""/u, '守卫提示要单独成一块')
+  sourceTextChecks.match("T044", source, /const guardWarn = action\.guardHint === ""/u, '守卫提示要单独成一块')
 })
 
 await ok('client bundle：重启完成回执接进界面（2026-10-21）', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   // 宿主在状态里给 lastRestart；客户端要读它、要有一句话、要显示出来。
-  assert.match(source, /lastRestart: body\.lastRestart !== null/u, '要读宿主给的回执')
-  assert.match(source, /function restartReceiptText/u, '要有回执文案函数')
-  assert.match(source, /restartReceipt: "宿主已于 \{time\} 完成重启/u, '回执只证明Host恢复')
-  assert.match(source, /restart,\s*op,/u, 'useRestart 要 expose restart 与操作状态；额外状态字段不改变这个契约')
+  sourceTextChecks.match("T045", source, /lastRestart: body\.lastRestart !== null/u, '要读宿主给的回执')
+  sourceTextChecks.match("T046", source, /function restartReceiptText/u, '要有回执文案函数')
+  sourceTextChecks.match("T047", source, /restartReceipt: "宿主已于 \{time\} 恢复（交接 \{sec\} 秒）/u, '回执只证明Host恢复，耗时为交接时间')
+  sourceTextChecks.match("T048", source, /restart,\s*op,/u, 'useRestart 要 expose restart 与操作状态；额外状态字段不改变这个契约')
   // 主区面板里显示一行
-  assert.match(source, /action\.restart !== null && React\.createElement\("p", \{ className: "dshdr-panel-note" \}, restartReceiptText/u, '面板要显示回执行')
+  sourceTextChecks.match("T049", source, /action\.restart !== null && React\.createElement\("p", \{ className: "dshdr-panel-note" \}, restartReceiptText/u, '面板要显示回执行')
   // 设置行：没有别的提示时优先显示回执，而不是干巴巴的默认说明
-  assert.match(source, /action\.restart !== null \? restartReceiptText\(action\.restart\) : t\(DEFAULT_HINT_KEY\)/u, '设置行优先显示回执')
+  sourceTextChecks.match("T050", source, /action\.restart !== null \? restartReceiptText\(action\.restart\) : t\(DEFAULT_HINT_KEY\)/u, '设置行优先显示回执')
 })
 
 await ok('client bundle：图标优先用官方 IconRefreshOutlineRegular，兜底也是 16 格描边', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /UI\.IconRefreshOutlineRegular/u, '官方图标集里有现成的刷新图标，优先用它')
-  assert.match(source, /viewBox: "0 0 16 16"/u, '兜底图标按官方约定画在 16 格里')
-  assert.match(source, /stroke: "currentColor"/u, '图标要跟文字颜色走')
-  assert.match(source, /fill: "none"/u, '描边图标必须 fill:none，否则会填成实心')
-  assert.doesNotMatch(source, /"⟳"/u, '不该再用字体符号当图标（字体缺字时会出现方框）')
+  sourceTextChecks.match("T051", source, /UI\.IconRefreshOutlineRegular/u, '官方图标集里有现成的刷新图标，优先用它')
+  sourceTextChecks.match("T052", source, /viewBox: "0 0 16 16"/u, '兜底图标按官方约定画在 16 格里')
+  sourceTextChecks.match("T053", source, /stroke: "currentColor"/u, '图标要跟文字颜色走')
+  sourceTextChecks.match("T054", source, /fill: "none"/u, '描边图标必须 fill:none，否则会填成实心')
+  sourceTextChecks.doesNotMatch("T055", source, /"⟳"/u, '不该再用字体符号当图标（字体缺字时会出现方框）')
 })
 
 await ok('client bundle：直接用官方组件，且取不到时有兜底', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /require\("@deepseek-ai\/dsh-client-ui-primitives"\)/u, '要 require 官方组件库本体')
-  assert.match(source, /catch \{[\s\S]{0,40}?UI = null/u, 'require 必须在 try/catch 里：官方改名也不能把插件带崩')
-  assert.match(source, /UI\.Button/u, '设置页按钮用官方 Button')
-  assert.match(source, /UI\.RiskConfirmation/u, '风险确认用官方 RiskConfirmation')
-  assert.match(source, /variant: "ghost"/u, '官方 Button 的变体')
-  assert.match(source, /acknowledged: action\.modal\.acknowledged/u, 'RiskConfirmation 是受控的：勾选状态由调用方持有')
-  assert.match(source, /onAcknowledgedChange/u, '勾选回调用官方约定的名字')
-  assert.match(source, /data-variant": "ghost"/u, '兜底按钮也照抄官方 ghost 变体')
+  sourceTextChecks.match("T056", source, /require\("@deepseek-ai\/dsh-client-ui-primitives"\)/u, '要 require 官方组件库本体')
+  sourceTextChecks.match("T057", source, /catch \{[\s\S]{0,40}?UI = null/u, 'require 必须在 try/catch 里：官方改名也不能把插件带崩')
+  sourceTextChecks.match("T058", source, /UI\.Button/u, '设置页按钮用官方 Button')
+  sourceTextChecks.match("T059", source, /UI\.RiskConfirmation/u, '风险确认用官方 RiskConfirmation')
+  sourceTextChecks.match("T060", source, /variant: "ghost"/u, '官方 Button 的变体')
+  sourceTextChecks.match("T061", source, /acknowledged: action\.modal\.acknowledged/u, 'RiskConfirmation 是受控的：勾选状态由调用方持有')
+  sourceTextChecks.match("T062", source, /onAcknowledgedChange/u, '勾选回调用官方约定的名字')
+  sourceTextChecks.match("T063", source, /data-variant": "ghost"/u, '兜底按钮也照抄官方 ghost 变体')
 })
 
 await ok('package.json：client.inject 声明了官方组件库', async () => {
@@ -1432,13 +1452,15 @@ await ok('左上角：注册进官方面板座位（同任务看板），行交�
   assert.equal(main.key, 'dsh-desktop-restart', 'main 是按 key 配对的面板')
 
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /function PanelGlyph/u, '这个座位只提供图标组件')
-  assert.match(source, /variant: "primary"/u, '面板里的按钮用官方 Button 的 primary 变体')
+  sourceTextChecks.match("T064", source, /function PanelGlyph/u, '这个座位只提供图标组件')
+  sourceTextChecks.match("T065", source, /variant: "primary"/u, '面板里的按钮用官方 Button 的 primary 变体')
 })
 
 await ok('插件开关：宿主 config 里的入口开关（缺省 true）', async () => {
-  assert.deepEqual(__test.readEntries({}), { panel: true, footer: true, header: true, command: true, settingsRow: true })
+  assert.deepEqual(__test.readEntries({}), { panel: true, footer: true, header: true, command: true, settingsRow: true, accountMenu: true, headerRefresh: false })
   const off = __test.readEntries({ footer: false, command: false })
+  assert.equal(__test.readEntries({accountMenu:false}).accountMenu,false)
+  assert.equal(__test.readEntries({accountMenu:undefined}).accountMenu,true)
   assert.equal(off.footer, false)
   assert.equal(off.command, false)
   assert.equal(off.panel, true, '没写的按 true')
@@ -1486,13 +1508,13 @@ await ok('插件开关：本机保存的选择能真的关掉入口（并保留�
 
 await ok('插件开关：清理那一行读写的宿主设置，不是浏览器本地', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /function SweepRow/u, '设置页要有这一行')
-  assert.match(source, /SWEEP_ROUTE/u, '必须打宿主路由，不能只在本地记一下')
-  assert.match(source, /\?enabled=1/u, '打开开关要通知宿主')
-  assert.match(source, /\?enabled=0/u, '关掉开关也要通知宿主')
-  assert.match(source, /\?run=1/u, '「立即清理」要能单独触发一次')
-  assert.match(source, /sweep: body\.sweep/u, '开关状态必须来自宿主的状态接口（不许客户端自己编默认值）')
-  assert.match(source, /当前版本只扫描并预览候选项，不会删除/u, '界面明确当前只预览')
+  sourceTextChecks.match("T066", source, /function SweepRow/u, '设置页要有这一行')
+  sourceTextChecks.match("T067", source, /SWEEP_ROUTE/u, '必须打宿主路由，不能只在本地记一下')
+  sourceTextChecks.match("T068", source, /\?enabled=1/u, '打开开关要通知宿主')
+  sourceTextChecks.match("T069", source, /\?enabled=0/u, '关掉开关也要通知宿主')
+  sourceTextChecks.match("T070", source, /\?run=1/u, '「立即清理」要能单独触发一次')
+  sourceTextChecks.match("T071", source, /sweep: body\.sweep/u, '开关状态必须来自宿主的状态接口（不许客户端自己编默认值）')
+  sourceTextChecks.match("T072", source, /当前版本只扫描并预览候选项，不会删除/u, '界面明确当前只预览')
 })
 
 await ok('左侧边栏：注册进官方座位 sidebar.footer.action，照官方 42px 动作行', async () => {
@@ -1529,27 +1551,27 @@ await ok('左侧边栏：注册进官方座位 sidebar.footer.action，照官方
     'width:calc(100% + 4px)',
     'margin:4px -2px',
   ]) {
-    assert.ok(source.includes(token), `缺少与同座位占用者一致的 ${token}`)
+    sourceTextChecks.ok("T107", source.includes(token), `缺少与同座位占用者一致的 ${token}`)
   }
-  assert.match(
-    source,
+  sourceTextChecks.match(
+    "T073", source,
     /\.dshdr-foot-badge:hover:not\(:disabled\)\{background:var\(--dsw-alias-interactive-bg-hover/u,
     '官方 hover 是加 interactive-bg-hover 底色',
   )
-  assert.match(
-    source,
+  sourceTextChecks.match(
+    "T074", source,
     /\.dshdr-foot\[data-rail=1\]\{width:36px;height:36px;margin:8px 0 10px\}/u,
     '收起成 rail 时官方是 36×36、margin 8px 0 10px',
   )
-  assert.match(
-    source,
+  sourceTextChecks.match(
+    "T075", source,
     /\.dshdr-foot\[data-rail=1\] \.dshdr-foot-badge\{border-radius:50%;justify-content:center;gap:0;width:36px;height:36px;padding:0\}/u,
     '收起成 rail 时官方是圆形',
   )
   // 同座位里 dsh-diff-approval 的条目也是整行宽 + flex:none；容器不允许换行时，
   // 后注册的那个会被挤出容器、只露出一角（2026-10-09 实测）。
-  assert.match(
-    source,
+  sourceTextChecks.match(
+    "T076", source,
     /\[class\*=\\"footerActions\\"\]:has\(\.dshdr-foot\)\{flex-wrap:wrap !important\}/u,
     '同座位多个整行条目时，容器必须允许换行，且只命中装着本插件这一行的容器',
   )
@@ -1559,41 +1581,41 @@ await ok('插件开关：手动清理必须留下看得见的回执', async () =
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   // 2026-10-10 实测：清理结果通常是「扫描 N 个、删掉 0 个」，两次一模一样时界面
   // 毫无变化，用户以为按钮坏了（其实点击成功）。所以手动清理必须写一句带时间戳的回执。
-  assert.match(source, /刚刚扫描/u, '手动扫描后必须写一句回执')
-  assert.match(source, /const clockOf/u, '回执要带时间戳，让「又跑了一次」看得见')
-  assert.match(source, /describe\(last\)/u, '提示文字统一走 describe（含时间戳）')
-  assert.match(source, /call\("\?run=1", true\)/u, '「立即清理」要标成手动触发')
-  assert.match(source, /const toggle = /u, '开关的拨动处理要单独一处，别把形状假设写死在 JSX 里')
+  sourceTextChecks.match("T077", source, /刚刚扫描/u, '手动扫描后必须写一句回执')
+  sourceTextChecks.match("T078", source, /const clockOf/u, '回执要带时间戳，让「又跑了一次」看得见')
+  sourceTextChecks.match("T079", source, /describe\(last\)/u, '提示文字统一走 describe（含时间戳）')
+  sourceTextChecks.match("T080", source, /call\("\?run=1", true\)/u, '「立即清理」要标成手动触发')
+  sourceTextChecks.match("T081", source, /const toggle = /u, '开关的拨动处理要单独一处，别把形状假设写死在 JSX 里')
 })
 
 await ok('插件开关：清理结果要显眼 —— 独立一行、按结果上色、跑起来转圈', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   // 2026-10-10 第二轮实测：上一轮只是把回执写成 12px 的 hint（`.dshdr-set-hint`），
   // 读完仍然觉得「好像没发生什么」。结果因此独立成行、按结果上色，忙碌时转圈。
-  assert.match(source, /className: "dshdr-set-result"/u, '结果必须有自己的那一行，不再借 hint 的位置')
-  assert.match(
-    source,
+  sourceTextChecks.match("T082", source, /className: "dshdr-set-result"/u, '结果必须有自己的那一行，不再借 hint 的位置')
+  sourceTextChecks.match(
+    "T083", source,
     /\.dshdr-set-result\[data-tone=ok\]\{color:var\(--dsw-alias-state-success-primary/u,
     '成功用官方成功色',
   )
-  assert.match(
-    source,
+  sourceTextChecks.match(
+    "T084", source,
     /\.dshdr-set-result\[data-tone=warn\]\{color:var\(--dsw-alias-state-warn-primary/u,
     '有目录没删掉是警告色，不能谎报成功',
   )
-  assert.match(
-    source,
+  sourceTextChecks.match(
+    "T085", source,
     /\.dshdr-set-result\[data-tone=error\]\{color:var\(--dsw-alias-state-error-primary/u,
     '失败用官方错误色',
   )
-  assert.match(source, /const toneOf = /u, '颜色要有唯一一处判定，别散落在各处')
-  assert.match(
-    source,
+  sourceTextChecks.match("T086", source, /const toneOf = /u, '颜色要有唯一一处判定，别散落在各处')
+  sourceTextChecks.match(
+    "T087", source,
     /\.dshdr-spin\{display:inline-flex;transform-origin:center;animation:dshdr-spin/u,
     '忙碌时图标要转起来（官方 Button 不接受 data-busy，所以用可复用的类）',
   )
-  assert.match(
-    source,
+  sourceTextChecks.match(
+    "T088", source,
     /prefers-reduced-motion:reduce\)\{[^}]*\.dshdr-spin\{animation:none\}/u,
     '系统开了「减少动效」时必须停转',
   )
@@ -1683,14 +1705,14 @@ await ok('顺手收拾界面：默认不动；明确开启后才藏，且不碰�
 
 await ok('顺手收拾界面：开关存在本机、关掉能原样恢复，认不出文字就不动手', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /const CONTACT_LABELS = \["意见反馈", "Feedback"\]/u, '认人只用这两种文字')
-  assert.match(source, /button\[role=\\"menuitem\\"\]/u, '内置账号菜单给的就是这个形状，没有 id / data 可认')
-  assert.match(source, /new MutationObserver/u, '菜单是点开才挂 DOM 的，不能只在启动时扫一次')
-  assert.match(source, /node\.removeAttribute\(HIDER_ATTR\)/u, '关掉开关要把标记摘掉')
-  assert.match(source, /node\.style\.display = ""/u, '关掉开关要把被藏的元素放开')
-  assert.match(source, /HIDE_CONTACT_STORE_KEY/u, '开关存本机即可（这是纯客户端行为）')
-  assert.match(source, /raw === null \? false : raw !== "0"/u, '没存过时默认不藏（新用户原样）')
-  assert.match(source, /CONTACT_LABELS\.indexOf\(text\) < 0/u, '认不出就跳过，绝不误伤别的菜单项')
+  sourceTextChecks.match("T089", source, /const CONTACT_LABELS = \["意见反馈", "Feedback"\]/u, '认人只用这两种文字')
+  sourceTextChecks.match("T090", source, /button\[role=\\"menuitem\\"\]/u, '内置账号菜单给的就是这个形状，没有 id / data 可认')
+  sourceTextChecks.match("T091", source, /new MutationObserver/u, '菜单是点开才挂 DOM 的，不能只在启动时扫一次')
+  sourceTextChecks.match("T092", source, /node\.removeAttribute\(HIDER_ATTR\)/u, '关掉开关要把标记摘掉')
+  sourceTextChecks.match("T093", source, /node\.style\.display = ""/u, '关掉开关要把被藏的元素放开')
+  sourceTextChecks.match("T094", source, /HIDE_CONTACT_STORE_KEY/u, '开关存本机即可（这是纯客户端行为）')
+  sourceTextChecks.match("T095", source, /raw === "1"/u, '没存过时默认不藏（新用户原样）')
+  sourceTextChecks.match("T096", source, /CONTACT_LABELS\.indexOf\(text\) < 0/u, '认不出就跳过，绝不误伤别的菜单项')
 })
 
 await ok('host bundle：cordis.patch.yml 挂载的包名等于 package.json 的包名', async () => {
@@ -1965,6 +1987,12 @@ await ok('helper：从 netstat 里认出「谁在听」（重启完成的新判�
   assert.equal(helper.parseNetstatListeners(undefined), null)
 })
 
+await ok('有任务时两击直接强制重启（2026-10-29 决策甲）', async () => {
+  await forceContract()
+  const broken = readFileSync(join(libDir,'client.js'),'utf8').replace('params.push("now=1")','params.push("now=0")')
+  await assert.rejects(()=>forceContract(broken),/now=1/,'executed request mutation must make the behavior test fail')
+})
+
 await ok('文档：README 里写的冒烟测试数量与实际一致', async () => {
   // 这条挡的是「加了测试却忘了改文档」—— 也顺带挡住反过来的「文档说加了、其实没加」
   // 那种曾经出现过的情况（2026-10-15：提交说明写着新增 10 项，仓库里一项都没有）。
@@ -1987,13 +2015,11 @@ console.log('')
 if (skippedWindowsOnly > 0) {
   console.log('all ' + String(passed) + ' checks passed (' + String(skippedWindowsOnly) + ' skipped: Windows-only)')
 } else {
-await ok('等待态必须能「仍要立即重启」（2026-10-22）', async () => {
-  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
-  assert.match(source, /forceNowRestart/u, 'action 要暴露 forceNowRestart')
-  assert.match(source, /forceNow: "/u, '按钮文案要有中英文')
-  assert.match(source, /params\.push\("now=1"\)/u, '强制请求必须跳过等待')
-  assert.match(source, /React\.createElement\(React\.Fragment, null, main, force\)/u, '等待态同时渲染两个按钮')
-})
+
 
   console.log('all ' + String(passed) + ' checks passed')
 }
+
+console.log(`TEXT CHECKS ONLY: ${sourceTextChecks.count(true)} retained source regex assertions; ${sourceTextChecks.count()-sourceTextChecks.count(true)} structural assertions; not behavior acceptance`)
+
+console.log(`GROUP SUMMARY: ${passed} total groups; ${sourceTextGroups} contain registered text-only checks (not behavior proof)`)

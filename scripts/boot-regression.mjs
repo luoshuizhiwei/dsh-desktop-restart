@@ -252,7 +252,7 @@ for (const { spec, Component } of registrations) {
   }
   assert.equal(renderError, null, `组件 ${spec.id ?? spec.key}（${spec.name}）渲染时抛异常：${renderError && renderError.message}`)
   assert.ok(tree !== null && tree !== undefined, `组件 ${spec.id ?? spec.key} 渲染结果不能是 null/undefined`)
-  // headerRefreshGuard：会话标题栏必须同时有「重启」和「刷新」两个按钮
+  // headerRefreshGuard：标题栏刷新默认关闭；开启及立即切换由客户端行为回归覆盖
   if (spec.name === 'conversation.session.header.actions') {
     const labels = []
     const walk = (node) => {
@@ -266,20 +266,7 @@ for (const { spec, Component } of registrations) {
     walk(tree)
     // 沙箱里 t() 没有词典会返回键名，所以键名与译文都算通过
     const hasRefresh = labels.some((label) => label === 'refreshShort' || label === '刷新' || label === 'Refresh')
-    assert.ok(hasRefresh, `标题栏缺少「刷新」按钮（实际 aria-label: ${labels.join(' / ')}）`)
-    // 刷新按钮只有文字、没有图标；而 .dshdr-label 默认 display:none —— 必须带 --label 修饰类才看得见
-    const classes = []
-    const collectClass = (node) => {
-      if (node === null || node === undefined || typeof node !== 'object') return
-      const cls = node.props && node.props.className
-      if (typeof cls === 'string') classes.push(cls)
-      if (Array.isArray(node.children)) node.children.forEach(collectClass)
-    }
-    collectClass(tree)
-    assert.ok(
-      classes.some((cls) => cls.includes('dshdr-trigger--label')),
-      '刷新按钮必须带 dshdr-trigger--label（否则文字被 display:none 隐藏，按钮变透明）',
-    )
+    assert.equal(hasRefresh,false,'header refresh is absent by default')
   }
 }
 

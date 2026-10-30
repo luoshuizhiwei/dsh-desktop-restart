@@ -1,7 +1,7 @@
 {
   "name": "@luoshuizhiwei/dsh-desktop-restart",
   "version": "0.4.5",
-  "description": "DeepSeek Harness desktop restart plugin with guarded restart, one-time receipts, snapshot candidate previews and optional Feedback hiding. UI follows the app language (zh/en). 桌面版重启插件：受保护的重启、一次性回执、快照候选预览及可选隐藏反馈；界面跟随主应用语言（中/英）。",
+  "description": "DeepSeek Harness desktop restart plugin with guarded restart, one-time receipts, snapshot candidate previews and optional Feedback hiding. UI follows the app language (zh/en). 桌面版重启插件：受保护的重启、一次性回执、快照候选预览及可选隐藏反馈；界面跟随主应用语言（中/英）。 Optional Cookie health/backup requires Node.js >=22.16.0; core restart supports Node.js >=20.",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -23,11 +23,10 @@
   },
   "files": [
     "lib",
-    "scripts",
-    "docs",
     "cordis.patch.yml",
     "README.md",
-    "README.en.md"
+    "README.en.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20",
@@ -35,7 +34,8 @@
   },
   "scripts": {
     "test": "node scripts/smoke.mjs && node --experimental-vm-modules scripts/host-regression.mjs && node scripts/client-regression.mjs && node scripts/engine-regression.mjs && node scripts/opt02-regression.mjs && node scripts/boot-regression.mjs && node --experimental-vm-modules scripts/wallclock-countdown.mjs",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test",
+    "lint": "eslint ."
   },
   "dsh": {
     "bundle": {
@@ -60,5 +60,8 @@
   "bugs": {
     "url": "https://github.com/luoshuizhiwei/dsh-desktop-restart/issues"
   },
-  "homepage": "https://github.com/luoshuizhiwei/dsh-desktop-restart#readme"
+  "homepage": "https://github.com/luoshuizhiwei/dsh-desktop-restart#readme",
+  "devDependencies": {
+    "eslint": "9.39.5"
+  }
 }

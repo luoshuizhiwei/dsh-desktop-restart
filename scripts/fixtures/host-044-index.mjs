@@ -1,3 +1,4 @@
+// HISTORICAL SNAPSHOT ONLY: 0.4.4 defect reproduction, never current production acceptance or pass count.
 /**
  * dsh-desktop-restart — Host half.
  *

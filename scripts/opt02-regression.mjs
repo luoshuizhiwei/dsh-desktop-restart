@@ -18,7 +18,6 @@ assert.equal(__test.opFileOf('probe').startsWith(SANDBOX), true,
   `状态目录必须落在隔离沙箱内（实际 ${__test.opFileOf('probe')}）`)
 
 try {
-  let passed = 0
   async function ok(name, fn) {
     await fn()
     globalThis.__opt02Passed = (globalThis.__opt02Passed ?? 0) + 1

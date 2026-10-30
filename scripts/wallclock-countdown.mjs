@@ -106,6 +106,7 @@ await module.link(async (specifier) => {
 await module.evaluate()
 const ctx = {
   get(name) {
+      if (name === 'connection') return {requestRejection:()=>null}
     if (name === 'agents') return { get: () => ({}), list: () => [] }
     if (name === 'jobs') return { list: () => [] }
     return undefined

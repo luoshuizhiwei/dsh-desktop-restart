@@ -45,6 +45,12 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
+      - name: Install development checks
+        run: npm ci --ignore-scripts
+
+      - name: Lint current source and tests
+        run: npm run lint
+
       - name: Run offline tests
         run: npm test
 

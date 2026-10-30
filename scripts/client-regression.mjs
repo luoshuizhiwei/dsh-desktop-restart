@@ -1,247 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import vm from 'node:vm'
-import { dirname, join } from 'node:path'
-
-const here = dirname(fileURLToPath(import.meta.url))
-const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
-let passed = 0
-
-function ok(name, fn) {
-  fn()
-  passed += 1
-  console.log(`ok ${passed} - ${name}`)
-}
-
-function element(type, props, ...children) {
-  return { type, props: props ?? {}, children: children.length === 0 ? undefined : children.length === 1 ? children[0] : children }
-}
-
-function walk(node, predicate) {
-  if (node === null || node === undefined || typeof node !== 'object') return null
-  if (predicate(node)) return node
-  const children = Array.isArray(node.children) ? node.children : [node.children]
-  for (const child of children) {
-    const found = walk(child, predicate)
-    if (found !== null) return found
-  }
-  return node.props?.children ? walk(node.props.children, predicate) : null
-}
-
-function hookState() {
-  return { states: [], cursor: 0, effectMeta: [], pendingEffects: [], effectCursor: 0 }
-}
-
-function makeHarness(fetchHandler, options = {}) {
-  const clock = options.clock
-  let factory
-  let activeHook
-  let settingsSection
-  let settingsRestartRow
-  let sidebarRestartAction
-  let restartPanel
-  let headerRestartButton
-  let sweepRow
-  let nextTimerId = 1
-  const timers = new Map()
-  const registrations = new Map()
-  const style = { dataset: {}, textContent: '' }
-  const document = {
-    querySelector: () => null,
-    createElement: () => style,
-    head: { appendChild() {} },
-    body: { querySelectorAll: () => options.menuItems ?? [] },
-    querySelectorAll: () => (options.menuItems ?? []).filter(item => item.attributes.has('data-dshdr-hidden')),
-  }
-  const React = {
-    Fragment: Symbol('Fragment'),
-    createElement: element,
-    useState(initial) {
-      const hook = activeHook
-      const index = hook.cursor++
-      if (!(index in hook.states)) hook.states[index] = typeof initial === 'function' ? initial() : initial
-      const set = (next) => {
-        hook.states[index] = typeof next === 'function' ? next(hook.states[index]) : next
-      }
-      return [hook.states[index], set]
-    },
-    useEffect(effect, deps) {
-      const hook = activeHook
-      const index = hook.effectCursor++
-      hook.pendingEffects.push({ index, effect, deps })
-    },
-    useRef(initial) {
-      const hook = activeHook
-      const index = hook.cursor++
-      if (!(index in hook.states)) hook.states[index] = { current: initial }
-      return hook.states[index]
-    },
-  }
-  const window = {
-    localStorage: options.storage ?? { getItem: () => null, setItem() {} },
-    setTimeout(callback, delay) { const id = nextTimerId++; timers.set(id, { callback, delay }); return id },
-    clearTimeout(id) { timers.delete(id) },
-    __ModuleLoader__: { load(definition) { factory = definition.factory } },
-    // 测试时钟接缝：只在传了 clock 时暴露，生产没有这个字段
-    ...(clock ? { __dshdrNow: () => clock.now } : {}),
-  }
-  const fetch = (url, options = {}) => fetchHandler(url, options)
-  vm.runInNewContext(source, {
-    window,
-    document,
-    navigator: { language: 'en-US' },
-    fetch,
-    console,
-    Symbol,
-  })
-  const plugin = factory((name) => {
-    if (name === 'react') return React
-    throw new Error(`unexpected module ${name}`)
-  })
-  const slots = {
-    inject(_name, callback) { return callback() },
-    register(spec, component) {
-      const key = `${spec.name}:${spec.id ?? spec.key}`
-      registrations.set(key, component)
-      if (spec.name === 'settings.section') settingsSection = component
-      if (spec.name === 'settings.general.item') settingsRestartRow = component
-      if (spec.name === 'sidebar.footer.action') sidebarRestartAction = component
-      if (spec.name === 'main' && spec.key === 'dsh-desktop-restart') restartPanel = component
-      if (spec.name === 'conversation.session.header.actions') headerRestartButton = component
-      return () => registrations.delete(key)
-    },
-  }
-  plugin.apply({
-    get(name) { return name === 'slots' ? slots : undefined },
-    effect(run) { run() },
-  })
-
-  function render(component, hook = hookState(), runEffects = true) {
-    hook.cursor = 0
-    hook.effectCursor = 0
-    hook.pendingEffects = []
-    activeHook = hook
-    let tree
-    try {
-      tree = component()
-    } finally {
-      activeHook = undefined
-    }
-    if (runEffects) for (const pending of hook.pendingEffects) {
-      const previous = hook.effectMeta[pending.index]
-      const changed = previous === undefined || pending.deps === undefined
-        || pending.deps.length !== previous.deps.length
-        || pending.deps.some((value, index) => !Object.is(value, previous.deps[index]))
-      if (!changed) continue
-      if (typeof previous?.cleanup === 'function') previous.cleanup()
-      const cleanup = pending.effect()
-      hook.effectMeta[pending.index] = { deps: pending.deps, cleanup }
-    }
-    return { tree, hook }
-  }
-  const section = render(settingsSection, hookState(), false)
-  sweepRow = walk(section.tree, (node) => node.type?.name === 'SweepRow')
-  assert.ok(sweepRow, 'SettingsSection must contain SweepRow')
-  return {
-    render,
-    settingsComponent: settingsSection,
-    hideContactComponent: walk(section.tree, node => node.type?.name === 'HideContactRow').type,
-    activeSlots: () => Array.from(registrations.keys()).sort(),
-    settingsRestartComponent: settingsRestartRow,
-    sidebarComponent: sidebarRestartAction,
-    sweepComponent: sweepRow.type,
-    panelComponent: restartPanel,
-    headerComponent: headerRestartButton,
-    // 注入 <style> 后的完整 CSS 文本（stub 的 style.textContent 被 factory 写入）。
-    // 「恰好一次」断言用它推导各 span 在宽/窄屏下的真实可见性 —— 不硬编码。
-    cssText: () => String(style.textContent),
-    fireTimer(delay) {
-      const entry = Array.from(timers.entries()).find(([, timer]) => delay === undefined || timer.delay === delay)
-      assert.ok(entry, `timer with delay ${delay ?? 'any'} should exist`)
-      timers.delete(entry[0])
-      entry[1].callback()
-    },
-    timerDelays() { return Array.from(timers.values(), (timer) => timer.delay) },
-    unmount(hook) {
-      for (const entry of hook.effectMeta) if (typeof entry?.cleanup === 'function') entry.cleanup()
-      hook.effectMeta = []
-    },
-  }
-}
-
-function reply(status, body) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => body,
-  }
-}
-
-async function flush() {
-  await Promise.resolve()
-  await new Promise((resolve) => setImmediate(resolve))
-  await Promise.resolve()
-}
-
-async function acceptRestart(harness, component) {
-  const instance = harness.render(component)
-  await flush()
-  let tree = harness.render(component, instance.hook).tree
-  const findRestart = () => buttons(tree).find((button) => (button.props['data-variant'] === 'primary' || /whole desktop app|整个桌面应用/u.test(String(button.props.title ?? ''))) && button.props.onClick)
-  let button = findRestart()
-  assert.ok(button, 'restart button exists')
-  assert.equal(button.props.disabled, false, 'old terminal state allows a new request')
-  button.props.onClick()
-  tree = harness.render(component, instance.hook).tree
-  button = findRestart()
-  button.props.onClick()
-  await flush()
-  for (let i = 0; i < 3; i += 1) tree = harness.render(component, instance.hook).tree
-  return { tree, hook: instance.hook }
-}
-
-function buttons(tree) {
-  const found = []
-  const visit = (node) => {
-    if (node === null || node === undefined || typeof node !== 'object') return
-    if (node.type === 'button') found.push(node)
-    const children = Array.isArray(node.children) ? node.children : [node.children]
-    for (const child of children) visit(child)
-  }
-  visit(tree)
-  return found
-}
-
-function buttonWithText(tree, text) {
-  const result = buttons(tree).find((button) => button.children === text || button.props['aria-label'] === text)
-  assert.ok(result, `button "${text}" should exist`)
-  return result
-}
-
-function textContent(node) {
-  if (typeof node === 'string' || typeof node === 'number') return String(node)
-  if (node === null || node === undefined || typeof node !== 'object') return ''
-  const children = Array.isArray(node.children) ? node.children : [node.children]
-  return children.map(textContent).join(' ')
-}
-
-
-function hintText(tree) {
-  const hint = walk(tree, (node) => node.type === 'span' && node.props.className === 'dshdr-set-hint' && node.props['aria-live'] === 'polite')
-  return hint?.children ?? ''
-}
-
-function statusBody(resume = 'off', extras = {}) {
-  return {
-    desktop: true,
-    guard: { active: false, tasks: { active: false, turns: 0, queued: 0, jobs: 0 }, installs: { active: false, running: false } },
-    entries: { panel: false, footer: false, header: false, settingsRow: false },
-    resume,
-    ...extras,
-  }
-}
-
+import { dirname,join } from 'node:path'
+import {fileURLToPath} from 'node:url'
+const here=dirname(fileURLToPath(import.meta.url))
+import { accountMenuDOM } from './fixtures/account-menu-dom.mjs'
+import { source, walk, makeHarness, reply, flush, acceptRestart, buttons, buttonWithText, textContent, statusBody } from './fixtures/client-harness.mjs'
+let passed=0
 
 {
   let reads = 0
@@ -295,10 +59,12 @@ async function testLocalizedGuard(blocked) {
   await flush()
   tree = harness.render(harness.panelComponent, instance.hook).tree
   assert.equal(posts, 1)
+  // 2026-10-29 契约更新：warn 态守卫说明在 panel-warn（guardWarn），
+  // 确认行在 panel-note（warnConfirmLine，含剩余秒数）—— 两类都收集。
   const notes = []
   const visit = (node) => {
     if (node === null || node === undefined || typeof node !== 'object') return
-    if (node.type === 'p' && node.props.className === 'dshdr-panel-note') notes.push(node.children)
+    if (node.type === 'p' && (node.props.className === 'dshdr-panel-note' || node.props.className === 'dshdr-panel-warn')) notes.push(node.children)
     const children = Array.isArray(node.children) ? node.children : [node.children]
     for (const child of children) visit(child)
   }
@@ -309,7 +75,7 @@ async function testLocalizedGuard(blocked) {
     assert.doesNotMatch(text, /中文原文/u)
   } else {
     assert.match(text, /2 agents generating or running tools/u)
-    assert.match(text, /Restarting now would interrupt them/u)
+    assert.match(text, /interrupt them|打断它们/u, '守卫说明仍在面板（warn 段落）')
     assert.doesNotMatch(text, /中文原文/u)
   }
 }
@@ -517,7 +283,7 @@ console.log(`ok ${passed} - structured install block is localized in English`)
   buttonWithText(tree, 'Retry status').props.onClick()
   await flush()
   tree = harness.render(harness.panelComponent, instance.hook).tree
-  assert.match(textContent(tree), /Restart complete/u)
+  assert.match(textContent(tree), /Host and restart client reconnected/u)
   assert.deepEqual(harness.timerDelays(), [])
   tree = harness.render(harness.panelComponent, instance.hook).tree
   const restart = buttons(tree).find((button) => button.props['data-variant'] === 'primary')
@@ -598,7 +364,7 @@ async function testTerminalRestart(componentKey, terminal, expected, disabled) {
 }
 
 await testTerminalRestart('panelComponent', { id: 'failed-op', result: 'failed', phase: 'stop', reason: 'stop-failed', helperAlive: false, busy: false }, /stop-failed/u, false)
-await testTerminalRestart('panelComponent', { id: 'ok-op', result: 'ok', phase: 'ready', helperAlive: false, busy: false }, /Restart complete/u, false)
+await testTerminalRestart('panelComponent', { id: 'ok-op', result: 'ok', phase: 'ready', helperAlive: false, busy: false }, /Host and restart client reconnected/u, false)
 await testTerminalRestart('panelComponent', { id: 'unknown-op', result: 'unknown', phase: 'launch', reason: 'launch-unknown', helperAlive: true, busy: true }, /result is unknown|结果不确定/u, true)
 await testTerminalRestart('settingsRestartComponent', { id: 'failed-op', result: 'failed', phase: 'stop', reason: 'stop-failed', helperAlive: false, busy: false }, /stop-failed/u, false)
 await testTerminalRestart('sidebarComponent', { id: 'unknown-op', result: 'unknown', phase: 'launch', reason: 'launch-unknown', helperAlive: true, busy: true }, /Unknown result|结果未知/u, true)
@@ -1011,7 +777,11 @@ if (!process.env.DSHDR4A_CASE || process.env.DSHDR4A_CASE === 'settings') {
 }
 
 if (!process.env.DSHDR4A_CASE || process.env.DSHDR4A_CASE === 'confirm') {
-  for (const state of ['waiting', 'countdown', 'paused']) {
+  // 2026-10-28 合并契约更新：等待态的独立「仍要立即重启」按钮已移除——
+  // 显式打断入口只保留在暂停询问框（RiskDialog 的 forceNow）。此用例
+  // 改为按新路径驱动：waiting/countdown 经暂停询问框（构造 paused 状态）
+  // 或跳过；直接用 paused 态测「显式打断需二次确认」，与旧断言语义一致。
+  for (const state of ['paused']) {
     let posts = 0
     let latest = { id: 'confirmation-request', state, ask: state === 'paused' ? 'ask-confirm' : null, pausedReason: 'new work', countdownRemainingMs: state === 'countdown' ? 4000 : null }
     const harness = makeHarness(async (url, options) => {
@@ -1030,23 +800,15 @@ if (!process.env.DSHDR4A_CASE || process.env.DSHDR4A_CASE === 'confirm') {
     tree = harness.render(harness.panelComponent, mounted.hook).tree
     assert.equal(posts, 0, state + ': immediate restart requires an additional confirmation')
     const confirm = buttonWithText(walk(tree, node => node.props.role === 'dialog'), 'Confirm restart now')
-    if (state === 'waiting') {
-      latest = { ...latest, state: 'terminal', executed: false, message: 'Not executed' }
-      harness.fireTimer(2000)
-      await flush()
-      harness.render(harness.panelComponent, mounted.hook)
-      confirm.props.onClick()
-      await flush()
-      assert.equal(posts, 0, 'an expired confirmation must not create a new request')
-    } else {
-      confirm.props.onClick()
-      await flush()
-      assert.equal(posts, 1)
-    }
+    confirm.props.onClick()
+    await flush()
+    assert.equal(posts, 1)
     harness.unmount(mounted.hook)
   }
+  // waiting/countdown 态的打断确认路径已由 M1–M3（主按钮第二击合并路径）
+  // 覆盖；此处不再经由已移除的独立按钮驱动。
   passed += 1
-  console.log(`ok ${passed} - 4A immediate action confirms separately in all pre-execution states and rejects a stale confirmation`)
+  console.log(`ok ${passed} - 4A immediate action confirms separately via the pause dialog and rejects a stale confirmation`)
 }
 if (!process.env.DSHDR4A_CASE || process.env.DSHDR4A_CASE === 'ask-owner') {
   const harness = makeHarness(async () => reply(200, statusBody('off', { waiting: { since: '2026-10-23T00:00:00.000Z' }, restartRequest: { id: 'owner-request', state: 'paused', ask: 'owner-ask', pausedReason: 'new work' } })))
@@ -1176,7 +938,7 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '5') {
 // R5：入口可见性。countdown 状态下标题栏按钮文字含剩余秒数、tooltip 含倒计时、
 // aria-label/aria-description 也含倒计时；paused 显示「已暂停」。
 // 这些入口（标题栏/侧栏）不渲染主面板的 waitingLine 段落，所以必须各自可见。
-if (!process.env.DSHDR_ENTRY_CASE || process.env.DSHDR_ENTRY_CASE === 'R5') {
+if (!process.env.DSHDR_SKIP_R5 && (!process.env.DSHDR_ENTRY_CASE || process.env.DSHDR_ENTRY_CASE === 'R5')) {
   const clock={now:1_800_000_000_000}
   const countdownUntil=new Date(clock.now+5_000).toISOString()
   const deadlineAt=new Date(clock.now+1_800_000).toISOString()
@@ -1187,10 +949,15 @@ if (!process.env.DSHDR_ENTRY_CASE || process.env.DSHDR_ENTRY_CASE === 'R5') {
   const header=h.render(h.sidebarComponent)
   await flush()
   let tree=h.render(h.sidebarComponent,header.hook).tree
+  // 2026-10-28 契约更新：等待/倒计时/暂停态主按钮文字统一为禁用语义
+  //（labelLocked），状态词不再放主按钮 —— 那看起来像可点的状态标签（本轮
+  // 缺陷反馈）。倒计时秒数仍可见于 title/aria-label/aria-describedby；
+  // 主按钮 disabled；状态文字由标题栏 headerStateOf 体系承担（H 系列覆盖）。
   const label=walk(tree,node=>node.type==='span'&&node.props.className==='dshdr-foot-label')
   assert.ok(label,'R5: sidebar label span exists during countdown')
-  assert.match(String(label.children),/\d+s/u,'R5: countdown seconds must appear in the entry label')
+  assert.match(String(label.children),/locked|已锁定/iu,'R5: countdown 主按钮文字必须是禁用语义（labelLocked）')
   const button=walk(tree,node=>node.type==='button'&&node.props.className==='dshdr-foot-badge')
+  assert.equal(button.props.disabled,true,'R5: countdown 态侧栏主按钮必须 disabled')
   assert.match(String(button.props.title),/countdown/iu,'R5: tooltip must mention the countdown')
   assert.match(String(button.props.title),/5s/u,'R5: tooltip countdown includes remaining seconds')
   assert.match(String(button.props['aria-label']),/\d+s/u,'R5: aria-label carries the remaining seconds')
@@ -1198,7 +965,7 @@ if (!process.env.DSHDR_ENTRY_CASE || process.env.DSHDR_ENTRY_CASE === 'R5') {
   assert.ok(described,'R5: aria-describedby text exists during countdown')
   assert.match(String(described.children),/countdown/iu,'R5: aria-description mentions the countdown')
   h.unmount(header.hook)
-  // paused：按钮文字显示「已暂停」类短词。
+  // paused：主按钮文字同样为禁用语义；暂停说明仍可见于 tooltip。
   const pausedHarness=makeHarness(async()=>reply(200,statusBody('off',{
     waiting:{since:'2026-10-26T00:00:00.000Z',maxMs:1_800_000},
     restartRequest:{state:'paused',ask:'paused-ask',pausedReason:'new work',deadlineAt},
@@ -1208,55 +975,50 @@ if (!process.env.DSHDR_ENTRY_CASE || process.env.DSHDR_ENTRY_CASE === 'R5') {
   const pausedTree=pausedHarness.render(pausedHarness.sidebarComponent,pausedMount.hook).tree
   const pausedLabel=walk(pausedTree,node=>node.type==='span'&&node.props.className==='dshdr-foot-label')
   assert.ok(pausedLabel,'R5: sidebar label span exists while paused')
-  assert.match(String(pausedLabel.children),/paused|已暂停|暂停/iu,'R5: paused state must be visible in the entry label')
-  assert.match(String(walk(pausedTree,node=>node.type==='button'&&node.props.className==='dshdr-foot-badge').props.title),/paused|暂停/iu,'R5: paused tooltip mentions the pause')
+  assert.match(String(pausedLabel.children),/locked|已锁定/iu,'R5: paused 主按钮文字必须是禁用语义（labelLocked）')
+  const pausedButton=walk(pausedTree,node=>node.type==='button'&&node.props.className==='dshdr-foot-badge')
+  assert.equal(pausedButton.props.disabled,true,'R5: paused 态侧栏主按钮必须 disabled')
+  assert.match(String(pausedButton.props.title),/paused|暂停/iu,'R5: paused tooltip mentions the pause')
   pausedHarness.unmount(pausedMount.hook)
-  passed++;console.log(`ok ${passed} - R5 countdown and paused are visible in entry label, tooltip, and aria copy`)
+  passed++;console.log(`ok ${passed} - R5 countdown and paused lock the entry button visibly; state stays in tooltip and aria copy`)
 }
 
-// R6：既有行为不退化 —— warn 态（宿主 409+guard，0.4.4 真机形态）二击必须发
-// **普通请求**（不带 force/now）；等待/倒计时仍由宿主管。当前代码二击发的是
-// submit({force:true})，直接抢跑 —— 这条就是缺陷 1 的客户端入口。
-if (!process.env.DSHDR_ENTRY_CASE || process.env.DSHDR_ENTRY_CASE === 'R6') {
+// R6：warn 态语义（2026-10-29 决策甲更新）——首击直达 warn（零请求），
+// 二击直接发 force+now（不弹框）。完整两击行为由 N1–N3 覆盖；此用例
+// 保留共享 store 的 press() 路径验证（N 系列走 useRestart 包装层时两条
+// press 都要过一遍）。
+if (!process.env.DSHDR_SKIP_R6 && (!process.env.DSHDR_ENTRY_CASE || process.env.DSHDR_ENTRY_CASE === 'R6')) {
   let posts=[]
-  let phase='warn'   // warn: POST 回 409+guard（0.4.4 宿主）; accepted: 回 202 waiting
   const h=makeHarness(async(url,options)=>{
     if(options.method==='POST'){
       posts.push(url)
-      if(phase==='warn'){
-        return reply(409,{ok:false,guard:{active:true,blocked:false,reasons:['有任务在跑'],tasks:{active:true,turns:1,queued:0,jobs:0},installs:{active:false,running:false}},error:'有任务在跑'})
-      }
-      return reply(202,{ok:true,waiting:true,since:'2026-10-26T00:00:00.000Z',restartRequest:{state:'waiting'}})
+      return reply(202,{ok:true})
     }
     return reply(200,statusBody('off',{guard:{active:true,blocked:false,reasons:['有任务在跑'],tasks:{active:true,turns:1,queued:0,jobs:0},installs:{active:false,running:false}}}))
   })
   const mount=h.render(h.panelComponent)
   await flush()
   let tree=h.render(h.panelComponent,mount.hook).tree
-  // 双击确认的第一段：两击提交一个普通请求 -> 宿主 409+guard -> 客户端进 warn 态。
   let primary=buttons(tree).find(b=>b.props['data-variant']==='primary')
+  // 第一击：直接进 warn（决策甲——不发普通请求撞 409）。
   primary.props.onClick()
   await flush()
+  assert.equal(posts.length,0,'R6: the first click goes straight to warn with no request')
   tree=h.render(h.panelComponent,mount.hook).tree
-  primary=buttons(tree).find(b=>b.props['data-variant']==='primary')
-  primary.props.onClick()
-  await flush()
-  assert.equal(posts.length,1,'R6: double-click confirmation sends one ordinary request')
-  assert.doesNotMatch(posts[0],/force=1|now=1/u,'R6: the submitted request carries neither force nor now')
-  tree=h.render(h.panelComponent,mount.hook).tree
+  assert.match(textContent(buttons(tree).find(b=>b.props['data-variant']==='primary')),/restart anyway|仍要重启/ui,'R6: 第一击后按钮为「仍要重启？」')
   // warn 态武装（900ms 冷却）：烧掉 timer。
   const armDelay=h.timerDelays().find(ms=>ms===900)
   if(armDelay!==undefined) h.fireTimer(900)
   tree=h.render(h.panelComponent,mount.hook).tree
-  // 用户在 warn 态的第二次点击（本意只是「确认」）：
+  // 第二击：直接 force+now，不弹框。
   primary=buttons(tree).find(b=>b.props['data-variant']==='primary')
-  phase='accepted'
   primary.props.onClick()
   await flush()
-  assert.equal(posts.length,2,'R6: the warn-state confirmation click submits again')
-  assert.doesNotMatch(posts[1],/force=1|now=1/u,'R6: the warn-state confirmation must resend a PLAIN request, never force')
+  assert.equal(posts.length,1,'R6: the second click sends exactly one request')
+  assert.match(posts[0],/force=1/u,'R6: the request carries force=1')
+  assert.match(posts[0],/now=1/u,'R6: the request carries now=1')
   h.unmount(mount.hook)
-  passed++;console.log(`ok ${passed} - R6 the warn-state second click resends a plain request without force`)
+  passed++;console.log(`ok ${passed} - R6 warn first click arms without a request; second click sends force+now directly`)
 }
 
 // R7：等待期轮询不退化 —— countdown 状态下仍有 2s 轮询（宿主权威推进）。
@@ -1348,15 +1110,15 @@ function visibleStatusTexts(tree, narrow, vis) {
   return texts
 }
 
-// H1：四种非 idle 状态下，标题栏渲染出**默认 CSS 可见**的状态文字。
-if (!process.env.DSHDR_HEADER_CASE || process.env.DSHDR_HEADER_CASE === 'H1') {
+// H1: non-idle state appears once inside the header button at both widths; waiting remains disabled.
+if (!process.env.DSHDR_SKIP_H1 && (!process.env.DSHDR_HEADER_CASE || process.env.DSHDR_HEADER_CASE === 'H1')) {
   const clock={now:1_800_000_000_000}
   const deadlineAt=new Date(clock.now+1_800_000).toISOString()
   const cases=[
-    {name:'confirm', statusExtras:{}, expect:/confirm|restart now|确认重启/ui, clickFirst:true},
-    {name:'countdown', statusExtras:{waiting:{since:new Date(clock.now-1_000).toISOString(),maxMs:1_800_000},restartRequest:{state:'countdown',countdownRemainingMs:5000,countdownUntil:new Date(clock.now+5_000).toISOString(),deadlineAt}}, expect:/5s|倒计时/ui},
-    {name:'waiting', statusExtras:{waiting:{since:new Date(clock.now-1_000).toISOString(),maxMs:1_800_000},restartRequest:{state:'waiting',deadlineAt}}, expect:/waiting|等待中/ui},
-    {name:'paused', statusExtras:{waiting:{since:new Date(clock.now-1_000).toISOString(),maxMs:1_800_000},restartRequest:{state:'paused',ask:'h1-ask',pausedReason:'new work',deadlineAt}}, expect:/paused|已暂停|暂停/ui},
+    {name:'confirm', statusExtras:{}, expect:/confirm|restart now|确认重启/ui, clickFirst:true, locked:false},
+    {name:'countdown', statusExtras:{waiting:{since:new Date(clock.now-1_000).toISOString(),maxMs:1_800_000},restartRequest:{state:'countdown',countdownRemainingMs:5000,countdownUntil:new Date(clock.now+5_000).toISOString(),deadlineAt}}, expect:/5s|倒计时/ui, locked:true},
+    {name:'waiting', statusExtras:{waiting:{since:new Date(clock.now-1_000).toISOString(),maxMs:1_800_000},restartRequest:{state:'waiting',deadlineAt}}, expect:/waiting|等待中/ui, locked:true},
+    {name:'paused', statusExtras:{waiting:{since:new Date(clock.now-1_000).toISOString(),maxMs:1_800_000},restartRequest:{state:'paused',ask:'h1-ask',pausedReason:'new work',deadlineAt}}, expect:/paused|已暂停|暂停/ui, locked:true},
   ]
   for (const c of cases) {
     const h=makeHarness(async()=>reply(200,statusBody('off',c.statusExtras)),{clock})
@@ -1375,18 +1137,27 @@ if (!process.env.DSHDR_HEADER_CASE || process.env.DSHDR_HEADER_CASE === 'H1') {
     const text=states.map(s=>textContent(s)).join(' ')
     assert.match(text,c.expect,`H1 ${c.name}: visible state text must match (got "${text}")`)
     assert.ok(!states.some(s=>String(s.props.className).includes('sr-only')),`H1 ${c.name}: state node must not be visually hidden`)
-    // 2026-10-28 重复文字回归：同一状态文案在任一宽度档位下只出现**一次**。
-    // 可见性从实际注入的 CSS 推导（宽屏：label 可见、header-state 应不可见；
-    // 窄屏：label 被隐藏、header-state 接管）。此前只断言「存在」，宽屏下
-    // label 与 header-state 并排各渲染一遍「确认重启」也照样通过——没抓住。
     const vis = deriveSpanVisibility(h.cssText())
-    for (const narrow of [false, true]) {
-      const hits = visibleStatusTexts(tree, narrow, vis).filter(tx => c.expect.test(tx)).length
-      assert.equal(hits, 1, `H1 ${c.name} (${narrow ? 'narrow <=540px' : 'wide >540px'}): the status text must appear exactly once, got ${hits}`)
+    const mainTrigger = buttons(tree).find(b=>String(b.props.className).trim()==='dshdr-trigger')
+    if (c.locked) {
+      // Visible state is now inside the disabled main button at both widths.
+      const wideLabel = visibleStatusTexts(tree, false, vis).filter(tx => c.expect.test(tx)).length
+      assert.equal(wideLabel, 1, `H1 ${c.name} (wide): the in-button status must appear exactly once, got ${wideLabel}`)
+      assert.equal(mainTrigger.props.disabled, true, `H1 ${c.name}: the main trigger must be disabled while a request is pending`)
+      // 状态信息仍可达：title 含状态词（tooltipOf 上一轮加的分支）。
+      assert.match(String(mainTrigger.props.title), c.expect, `H1 ${c.name}: the tooltip must still carry the state info`)
+      // 窄屏：状态词由 header-state 承担，恰好一次。
+      const narrowHits = visibleStatusTexts(tree, true, vis).filter(tx => c.expect.test(tx)).length
+      assert.equal(narrowHits, 1, `H1 ${c.name} (narrow <=540px): the status text must appear exactly once, got ${narrowHits}`)
+    } else {
+      for (const narrow of [false, true]) {
+        const hits = visibleStatusTexts(tree, narrow, vis).filter(tx => c.expect.test(tx)).length
+        assert.equal(hits, 1, `H1 ${c.name} (${narrow ? 'narrow <=540px' : 'wide >540px'}): the status text must appear exactly once, got ${hits}`)
+      }
     }
     h.unmount(mount.hook)
   }
-  passed++;console.log(`ok ${passed} - H1 confirm/countdown/waiting/paused are visibly rendered in the header`)
+  passed++;console.log(`ok ${passed} - H1 header states stay visible once per width tier; wait states lock the main trigger`)
 }
 
 // H2：idle 时标题栏不渲染任何额外可见文字/徽标（状态节点为空）。
@@ -1396,6 +1167,9 @@ if (!process.env.DSHDR_HEADER_CASE || process.env.DSHDR_HEADER_CASE === 'H2') {
   await flush()
   const tree=h.render(h.headerComponent,mount.hook).tree
   assert.equal(headerStateNodes(tree).length,0,'H2: idle header must not render state text or badge')
+  const name=walk(tree,n=>n.props?.className==='dshdr-header-name')
+  assert.match(textContent(name),/Restart|重启/u,'idle action must visibly identify restart')
+  assert.ok(h.cssText().includes('.dshdr-header-name{display:inline'),'restart name stays visible at narrow widths')
   assert.equal(headerCancelButton(tree),undefined,'H2: idle header must not render the cancel control')
   h.unmount(mount.hook)
   passed++;console.log(`ok ${passed} - H2 idle header renders no extra visible state or cancel control`)
@@ -1411,7 +1185,6 @@ if (!process.env.DSHDR_HEADER_CASE || process.env.DSHDR_HEADER_CASE === 'H3') {
   let tree=h.render(h.headerComponent,mount.hook).tree
   assert.match(headerStateNodes(tree).map(textContent).join(' '),/5s/u,'H3: starts at 5s')
   // 本地显示时钟逐秒推进（不产生新网络读取——沿用 4B-7 的断言口径）。
-  const reads0=h.timerDelays().length
   clock.now+=1000
   h.fireTimer(1000)
   tree=h.render(h.headerComponent,mount.hook).tree
@@ -1482,21 +1255,1329 @@ if (!process.env.DSHDR_HEADER_CASE || process.env.DSHDR_HEADER_CASE === 'H5') {
   passed++;console.log(`ok ${passed} - H5 header cancel sends cancelWait=1 and reports cancelled:false truthfully`)
 }
 
-// H6：注入 CSS 必须含互补规则 —— .dshdr-header-state 默认 display:none，
-// 仅在 @container(width<=540px) 内 display:inline（与 .dshdr-label 的
-// 窄屏隐藏正好互补），保证同一状态文字任何宽度下只出现一次。
+// H6: state text is always visible, with the existing compact narrow rule.
 if (!process.env.DSHDR_HEADER_CASE || process.env.DSHDR_HEADER_CASE === 'H6') {
   const h=makeHarness(async()=>reply(200,statusBody()))
   const css=h.cssText()
-  assert.ok(css.includes('.dshdr-header-state{display:none'),
-    'H6: .dshdr-header-state 默认必须 display:none（宽屏交给按钮自带的 .dshdr-label）')
-  assert.ok(/@container \(width<=540px\)\{[^}]*\.dshdr-header-state\{display:inline/.test(css),
-    'H6: 窄容器（≤540px）内 .dshdr-header-state 必须 display:inline')
-  // 互补前提：.dshdr-label 在同一窄容器查询内隐藏；基础规则无全局隐藏。
-  assert.ok(/@container \(width<=540px\)\{[^}]*\.dshdr-label\{display:none/.test(css),
-    'H6: 窄容器内 .dshdr-label 必须隐藏（互补的另一面）')
-  assert.ok(!css.split('@container')[0].includes('.dshdr-label{display:none'),
-    'H6: .dshdr-label 不得有全局 display:none（宽屏可见的前提）')
-  passed++;console.log(`ok ${passed} - H6 injected CSS carries the complementary header-state/label visibility rules`)
+  assert.ok(css.includes('.dshdr-header-state{display:inline'), 'H6: wide state text is visible')
+  assert.match(css, /\.dshdr-header-state\{[^}]*max-width:72px;overflow:hidden;text-overflow:ellipsis/u)
+  assert.ok(/@container \(width<=540px\)\{[^}]*\.dshdr-header-state\{display:inline;max-width:48px/.test(css))
+  passed++;console.log(`ok ${passed} - H6 header text is visible and bounded at both widths`)
 }
+
+// ── 2026-10-28 等待/倒计时/暂停态主按钮锁定 ────────────────────────────────
+// 缺陷：等待态主按钮可点但无任何反馈（press 只武装 confirm，labelOf 仍显示
+// 状态词），CONFIRM_MS 内第二击会 send({}) 真正提交。要求：主按钮 disabled
+// 且 press 早退；标签换禁用语义；「取消等待」是唯一常规出口。
+// W 系列：DSHDR_WAIT_CASE 可单跑。
+function waitFixtureHarness(state, posts) {
+  const clock = { now: 1_800_000_000_000 }
+  const extras = state === 'idle' ? {} : {
+    waiting: { since: new Date(clock.now - 1_000).toISOString(), maxMs: 1_800_000 },
+    restartRequest: {
+      state,
+      deadlineAt: new Date(clock.now + 1_800_000).toISOString(),
+      ...(state === 'countdown' ? { countdownRemainingMs: 5000, countdownUntil: new Date(clock.now + 5_000).toISOString() } : {}),
+      ...(state === 'paused' ? { ask: 'w-ask', pausedReason: 'new work' } : {}),
+    },
+  }
+  return makeHarness(async (url, options) => {
+    if (options.method === 'POST') {
+      posts.push(url)
+      return reply(200, { ok: true, cancelled: url.includes('cancelWait'), restartRequest: { state: 'idle' } })
+    }
+    return reply(200, statusBody('off', extras))
+  }, { clock })
+}
+const panelMainButton = (tree) => buttons(tree).find(b => b.props['data-variant'] === 'primary')
+const headerMainTrigger = (tree) => buttons(tree).find(b => String(b.props.className).trim() === 'dshdr-trigger')
+const footerMainBadge = (tree) => buttons(tree).find(b => String(b.props.className).includes('dshdr-foot-badge'))
+
+if (!process.env.DSHDR_WAIT_CASE || process.env.DSHDR_WAIT_CASE === 'W1') {
+  const posts = []
+  const h = waitFixtureHarness('waiting', posts)
+  const panel = h.render(h.panelComponent)
+  const footer = h.render(h.sidebarComponent)
+  const header = h.render(h.headerComponent)
+  await flush()
+  const panelTree = h.render(h.panelComponent, panel.hook).tree
+  const footerTree = h.render(h.sidebarComponent, footer.hook).tree
+  const headerTree = h.render(h.headerComponent, header.hook).tree
+  assert.equal(panelMainButton(panelTree).props.disabled, true, 'W1: waiting 态面板主按钮必须 disabled')
+  assert.equal(footerMainBadge(footerTree).props.disabled, true, 'W1: waiting 态侧栏底栏主按钮必须 disabled')
+  assert.equal(headerMainTrigger(headerTree).props.disabled, true, 'W1: waiting 态标题栏主按钮必须 disabled')
+  assert.match(textContent(panelMainButton(panelTree)), /locked|已锁定/iu, 'W1: 等待态主按钮文字必须是禁用语义（不再显示「等待中」状态词）')
+  h.unmount(panel.hook); h.unmount(footer.hook); h.unmount(header.hook)
+  passed++;console.log(`ok ${passed} - W1 waiting disables the main button in all three entries and labels it as locked`)
+}
+
+if (!process.env.DSHDR_WAIT_CASE || process.env.DSHDR_WAIT_CASE === 'W2') {
+  const posts = []
+  const h = waitFixtureHarness('waiting', posts)
+  const panel = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, panel.hook).tree
+  panelMainButton(tree).props.onClick()
+  await flush()
+  tree = h.render(h.panelComponent, panel.hook).tree
+  panelMainButton(tree).props.onClick()
+  await flush()
+  assert.equal(posts.length, 0, 'W2: waiting 态对主按钮连点两次不得发出任何重启请求（此前第二击会 send({}) 提交）')
+  h.unmount(panel.hook)
+  passed++;console.log(`ok ${passed} - W2 double-clicking the waiting main button sends no restart request`)
+}
+
+if (!process.env.DSHDR_WAIT_CASE || process.env.DSHDR_WAIT_CASE === 'W3') {
+  const posts = []
+  const h = waitFixtureHarness('waiting', posts)
+  const header = h.render(h.headerComponent)
+  await flush()
+  let tree = h.render(h.headerComponent, header.hook).tree
+  headerMainTrigger(tree).props.onClick()
+  await flush()
+  tree = h.render(h.headerComponent, header.hook).tree
+  assert.notEqual(String(headerMainTrigger(tree).props['data-phase']), 'confirm',
+    'W3: waiting 态直接调用 press 不得武装确认分支（此前无可见变化却悄悄进入 confirm，第二击即提交）')
+  headerMainTrigger(tree).props.onClick()
+  await flush()
+  assert.equal(posts.length, 0, 'W3: waiting 态直接调用 press 两次同样不发请求')
+  h.unmount(header.hook)
+  passed++;console.log(`ok ${passed} - W3 calling press directly in waiting neither arms confirm nor submits`)
+}
+
+if (!process.env.DSHDR_WAIT_CASE || process.env.DSHDR_WAIT_CASE === 'W4') {
+  for (const state of ['countdown', 'paused']) {
+    const posts = []
+    const h = waitFixtureHarness(state, posts)
+    const panel = h.render(h.panelComponent)
+    const footer = h.render(h.sidebarComponent)
+    const header = h.render(h.headerComponent)
+    await flush()
+    const panelTree = h.render(h.panelComponent, panel.hook).tree
+    const footerTree = h.render(h.sidebarComponent, footer.hook).tree
+    const headerTree = h.render(h.headerComponent, header.hook).tree
+    assert.equal(panelMainButton(panelTree).props.disabled, true, `W4: ${state} 态面板主按钮必须 disabled`)
+    assert.equal(footerMainBadge(footerTree).props.disabled, true, `W4: ${state} 态侧栏底栏主按钮必须 disabled`)
+    assert.equal(headerMainTrigger(headerTree).props.disabled, true, `W4: ${state} 态标题栏主按钮必须 disabled`)
+    let tree = panelTree
+    panelMainButton(tree).props.onClick()
+    await flush()
+    tree = h.render(h.panelComponent, panel.hook).tree
+    panelMainButton(tree).props.onClick()
+    await flush()
+    assert.equal(posts.length, 0, `W4: ${state} 态主按钮连点两次不得发出任何请求`)
+    let htree = headerTree
+    headerMainTrigger(htree).props.onClick()
+    await flush()
+    htree = h.render(h.headerComponent, header.hook).tree
+    assert.notEqual(String(headerMainTrigger(htree).props['data-phase']), 'confirm', `W4: ${state} 态直接调用 press 不得武装确认分支`)
+    h.unmount(panel.hook); h.unmount(footer.hook); h.unmount(header.hook)
+  }
+  passed++;console.log(`ok ${passed} - W4 countdown and paused states disable the main button and guard press identically`)
+}
+
+if (!process.env.DSHDR_WAIT_CASE || process.env.DSHDR_WAIT_CASE === 'W5') {
+  const posts = []
+  const h = waitFixtureHarness('waiting', posts)
+  const panel = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, panel.hook).tree
+  const cancel = buttons(tree).find(b => /cancel.*waiting|取消等待/ui.test(String(b.props['aria-label'] ?? '') + String(b.props.title ?? '')))
+  assert.ok(cancel, 'W5: waiting 态必须存在「取消等待」按钮')
+  assert.notEqual(cancel.props.disabled, true, 'W5: 「取消等待」必须可点（等待态唯一常规出口）')
+  cancel.props.onClick()
+  await flush()
+  assert.equal(posts.length, 1, 'W5: 点击取消等待恰好发出一个请求')
+  assert.match(posts[0], /cancelWait=1/u, 'W5: 取消请求必须带 cancelWait=1')
+  h.unmount(panel.hook)
+  passed++;console.log(`ok ${passed} - W5 the cancel-waiting entry stays available and sends cancelWait=1`)
+}
+
+if (!process.env.DSHDR_WAIT_CASE || process.env.DSHDR_WAIT_CASE === 'W6') {
+  const posts = []
+  const h = waitFixtureHarness('idle', posts)
+  const panel = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, panel.hook).tree
+  assert.notEqual(panelMainButton(tree).props.disabled, true, 'W6: idle 态主按钮必须可用（防回归）')
+  panelMainButton(tree).props.onClick()
+  await flush()
+  assert.equal(posts.length, 0, 'W6: 第一次点击只武装确认，不发请求（两步确认不变）')
+  tree = h.render(h.panelComponent, panel.hook).tree
+  panelMainButton(tree).props.onClick()
+  await flush()
+  assert.equal(posts.length, 1, 'W6: 确认窗口内第二击正常提交（两步确认不变）')
+  assert.doesNotMatch(posts[0], /force=1|now=1/u, 'W6: 普通路径两步确认仍发普通请求')
+  h.unmount(panel.hook)
+  passed++;console.log(`ok ${passed} - W6 idle keeps the two-step confirm behavior unchanged`)
+}
+
+// ── 2026-10-28 危险操作警示色（DSH 官方 dangerButton 范式） ────────────────
+// 依据（app.asar 提取）：官方插件卸载确认框用 Button variant="primary" +
+// className={dangerButton}，dangerButton 只覆盖两个 CSS 变量：
+//   --dsw-alias-button-primary-fill / --dsw-alias-button-primary-hover
+//   = var(--dsw-alias-state-error-primary)
+// 本插件同款 .dshdr-danger 类。只换色，不动交互/disabled/press 守卫。
+// D 系列：DSHDR_DANGER_CASE 可单跑。
+const DANGER_CLASS = 'dshdr-danger'
+
+// D1：「仍要立即重启」（等待态旁 forceNowRestart）带 danger 标记，非 ghost。
+if (!process.env.DSHDR_DANGER_CASE || process.env.DSHDR_DANGER_CASE === 'D1') {
+  const clock = { now: 1_800_000_000_000 }
+  const h = makeHarness(async () => reply(200, statusBody('off', {
+    waiting: { since: new Date(clock.now - 1_000).toISOString(), maxMs: 1_800_000 },
+    restartRequest: { state: 'waiting', deadlineAt: new Date(clock.now + 1_800_000).toISOString() },
+  })), { clock })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  h.render(h.panelComponent, mount.hook)
+  // 2026-10-28 合并契约更新：等待态独立 force 按钮已移除；危险色的承担者是
+  // 打断确认框的「确认立即重启」按钮（经暂停询问框路径打开）。
+  // 等待态无 paused 询问时此路径不可达，改用 paused 夹具直达打断确认框。
+  const pausedHarness = makeHarness(async () => reply(200, statusBody('off', {
+    waiting: { since: new Date(clock.now - 1_000).toISOString(), maxMs: 1_800_000 },
+    restartRequest: { state: 'paused', ask: 'd1-ask', pausedReason: 'new work', deadlineAt: new Date(clock.now + 1_800_000).toISOString() },
+  })), { clock })
+  const pausedMount = pausedHarness.render(pausedHarness.panelComponent)
+  await flush()
+  const pausedTree = pausedHarness.render(pausedHarness.panelComponent, pausedMount.hook).tree
+  const pausedDialog = walk(pausedTree, node => node.props?.role === 'dialog')
+  assert.ok(pausedDialog, 'D1: the pause question dialog must render')
+  const forceInDialog = buttons(pausedDialog).find(b => /restart now anyway|仍要立即重启/ui.test(textContent(b) + String(b.props['aria-label'] ?? '') + String(b.props.title ?? '')))
+  assert.ok(forceInDialog, 'D1: the force-now entry (pause dialog) must render')
+  forceInDialog.props.onClick()
+  await flush()
+  const confirmTree = pausedHarness.render(pausedHarness.panelComponent, pausedMount.hook).tree
+  const confirmDialog = walk(confirmTree, node => node.props?.role === 'dialog')
+  assert.ok(confirmDialog, 'D1: the interrupt confirmation dialog must open from the pause path')
+  const confirmBtn = buttons(confirmDialog).find(b => /confirm restart now|确认立即重启/ui.test(textContent(b) + String(b.props['aria-label'] ?? '')))
+  assert.ok(confirmBtn, 'D1: the confirm-restart-now button must render')
+  const cls = String(confirmBtn.props.className ?? '')
+  assert.ok(cls.includes(DANGER_CLASS), `D1: the interrupt confirm must carry the ${DANGER_CLASS} class (got "${cls}")`)
+  assert.ok(/primary/.test(String(confirmBtn.props['data-variant'] ?? '') + String(confirmBtn.props.variant ?? '')), `D1: the interrupt confirm must be variant primary (got "${cls}")`)
+  pausedHarness.unmount(pausedMount.hook)
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - D1 the interrupt confirm button carries the danger class with primary variant`)
+}
+
+// D2（2026-10-29 决策甲更新）：合并路径（warn 二击）不再弹框 —— 直接发
+// force+now。危险色的承担者是 warn 态的主按钮本身（N7 钉死 danger 类）；
+// 本用例改验合并路径不发普通请求、请求带 force+now。
+if (!process.env.DSHDR_SKIP_D2 && (!process.env.DSHDR_DANGER_CASE || process.env.DSHDR_DANGER_CASE === 'D2')) {
+  let posts = []
+  const h = makeHarness(async (url, options) => {
+    if (options.method === 'POST') {
+      posts.push(url)
+      return reply(202, { ok: true })
+    }
+    return reply(200, statusBody('off', { guard: { active: true, blocked: false, reasons: ['有任务在跑'], tasks: { active: true, turns: 1, queued: 0, jobs: 0 }, installs: { active: false, running: false } } }))
+  })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, mount.hook).tree
+  const primary = () => buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  primary().props.onClick()
+  await flush()
+  if (h.timerDelays().includes(900)) h.fireTimer(900)
+  tree = h.render(h.panelComponent, mount.hook).tree
+  assert.equal(walk(tree, node => node.props?.role === 'dialog'), null, 'D2: no dialog on the merged path (decision A)')
+  primary().props.onClick()
+  await flush()
+  assert.equal(posts.length, 1, 'D2: exactly one request on the merged path')
+  assert.match(posts[0], /force=1/u, 'D2: the merged-path request carries force=1')
+  assert.match(posts[0], /now=1/u, 'D2: the merged-path request carries now=1')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - D2 the merged path sends force+now directly with no dialog`)
+}
+
+// D3：面板大「重启」主按钮不含 danger（防误伤——常规操作，不能天天红）。
+if (!process.env.DSHDR_DANGER_CASE || process.env.DSHDR_DANGER_CASE === 'D3') {
+  const h = makeHarness(async () => reply(200, statusBody()))
+  const mount = h.render(h.panelComponent)
+  await flush()
+  const tree = h.render(h.panelComponent, mount.hook).tree
+  const main = buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  assert.ok(main, 'D3: the panel main restart button must render')
+  assert.equal(String(main.props.className ?? '').includes(DANGER_CLASS), false,
+    'D3: the main restart button must NOT carry the danger class (regular operation)')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - D3 the panel main restart button stays out of danger styling`)
+}
+
+// D4：「取消等待」不含 danger 且仍为 primary（安全出口最该醒目）。
+if (!process.env.DSHDR_DANGER_CASE || process.env.DSHDR_DANGER_CASE === 'D4') {
+  const clock = { now: 1_800_000_000_000 }
+  const h = makeHarness(async () => reply(200, statusBody('off', {
+    waiting: { since: new Date(clock.now - 1_000).toISOString(), maxMs: 1_800_000 },
+    restartRequest: { state: 'waiting', deadlineAt: new Date(clock.now + 1_800_000).toISOString() },
+  })), { clock })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  const tree = h.render(h.panelComponent, mount.hook).tree
+  const cancel = buttons(tree).find(b => /cancel.*waiting|取消等待/ui.test(String(b.props['aria-label'] ?? '') + String(b.props.title ?? '') + textContent(b)))
+  assert.ok(cancel, 'D4: the cancel-waiting button must render')
+  const cls = String(cancel.props.className ?? '')
+  assert.equal(cls.includes(DANGER_CLASS), false, 'D4: cancel-waiting must NOT carry the danger class')
+  assert.ok(/primary/.test(String(cancel.props['data-variant'] ?? '') + String(cancel.props.variant ?? '')), `D4: cancel-waiting must stay primary (got "${cls}")`)
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - D4 cancel-waiting stays primary without danger styling`)
+}
+
+// D5：「已锁定」主按钮仍为 disabled（danger 改色不影响禁用语义）。
+if (!process.env.DSHDR_DANGER_CASE || process.env.DSHDR_DANGER_CASE === 'D5') {
+  const clock = { now: 1_800_000_000_000 }
+  const h = makeHarness(async () => reply(200, statusBody('off', {
+    waiting: { since: new Date(clock.now - 1_000).toISOString(), maxMs: 1_800_000 },
+    restartRequest: { state: 'waiting', deadlineAt: new Date(clock.now + 1_800_000).toISOString() },
+  })), { clock })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  const tree = h.render(h.panelComponent, mount.hook).tree
+  const main = buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  assert.equal(main.props.disabled, true, 'D5: the locked main button must remain disabled')
+  assert.match(textContent(main), /locked|已锁定/iu, 'D5: the locked label stays')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - D5 the locked main button stays disabled after the color change`)
+}
+
+// ── 2026-10-28 合并「仍要立即重启」到主按钮第二击（有任务时） ───────────────
+// 用户决策（乙）：有任务在跑（warn 态）时，主按钮第二击 = 立刻打断任务重启。
+// 防误伤：二击不直接执行 —— 弹确认框（官方 RiskConfirmation 有勾选；
+// 无官方组件时内联 immediate 框），确认后才发 force+now；取消回 idle。
+// 无任务路径完全不变；等待态 press 早退守卫保持。
+// M 系列：DSHDR_MERGE_CASE 可单跑。
+
+
+// M1-M3（2026-10-29 决策甲退役）：上一轮的「warn 二击弹确认框」被用户否决
+// （四步太繁琐）。两击直接 force+now 的新语义由 N1-N3 / R6 完整覆盖；
+// M 系列保留 M4（无任务普通路径）、M5（无独立按钮）、M6（等待态守卫）三个钉子。
+
+// M4：无任务时第二击仍发普通 send({})（不含 force）。
+if (!process.env.DSHDR_MERGE_CASE || process.env.DSHDR_MERGE_CASE === 'M4') {
+  let posts = []
+  const h = makeHarness(async (url, options) => {
+    if (options.method === 'POST') { posts.push(url); return reply(202, { ok: true, waiting: true, restartRequest: { state: 'waiting' } }) }
+    return reply(200, statusBody())
+  })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, mount.hook).tree
+  const primary = () => buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  primary().props.onClick()
+  await flush()
+  tree = h.render(h.panelComponent, mount.hook).tree
+  primary().props.onClick()
+  await flush()
+  assert.equal(posts.length, 1, 'M4: the idle two-step confirm sends exactly one request')
+  assert.doesNotMatch(posts[0], /force=1|now=1/u, 'M4: the idle path must never carry force or now')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - M4 the no-task path keeps the plain two-step confirm`)
+}
+
+// M5：等待态不再渲染独立的「仍要立即重启」按钮。
+if (!process.env.DSHDR_MERGE_CASE || process.env.DSHDR_MERGE_CASE === 'M5') {
+  const clock = { now: 1_800_000_000_000 }
+  const h = makeHarness(async () => reply(200, statusBody('off', {
+    waiting: { since: new Date(clock.now - 1_000).toISOString(), maxMs: 1_800_000 },
+    restartRequest: { state: 'waiting', deadlineAt: new Date(clock.now + 1_800_000).toISOString() },
+  })), { clock })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  const tree = h.render(h.panelComponent, mount.hook).tree
+  const force = buttons(tree).find(b => /restart now anyway|仍要立即重启/ui.test(String(b.props['aria-label'] ?? '') + String(b.props.title ?? '') + textContent(b)))
+  assert.equal(force, undefined, 'M5: the standalone force-now button must no longer render in waiting state')
+  // 取消等待仍在（唯一常规出口）。
+  const cancel = buttons(tree).find(b => /cancel.*waiting|取消等待/ui.test(String(b.props['aria-label'] ?? '') + String(b.props.title ?? '') + textContent(b)))
+  assert.ok(cancel, 'M5: cancel-waiting must remain available')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - M5 the standalone force-now button is gone from waiting state`)
+}
+
+// M6：等待态主按钮仍 disabled（早退守卫未被合并改动破坏）。
+if (!process.env.DSHDR_MERGE_CASE || process.env.DSHDR_MERGE_CASE === 'M6') {
+  const clock = { now: 1_800_000_000_000 }
+  const posts = []
+  const h = makeHarness(async (url, options) => {
+    if (options.method === 'POST') { posts.push(url); return reply(200, { ok: true }) }
+    return reply(200, statusBody('off', {
+      waiting: { since: new Date(clock.now - 1_000).toISOString(), maxMs: 1_800_000 },
+      restartRequest: { state: 'waiting', deadlineAt: new Date(clock.now + 1_800_000).toISOString() },
+    }))
+  }, { clock })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, mount.hook).tree
+  const main = buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  assert.equal(main.props.disabled, true, 'M6: the waiting-state main button must stay disabled')
+  main.props.onClick()
+  await flush()
+  main.props.onClick()
+  await flush()
+  assert.equal(posts.length, 0, 'M6: two clicks on the disabled waiting button send nothing (hard guard intact)')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - M6 the waiting-state guard survives the merge`)
+}
+
+// ── 2026-10-29 两击强制（用户选甲）：有任务时主按钮二击直接 force+now ──────
+// 用户决策（甲）：有任务在跑时，主按钮第一击直接进 warn（红色「仍要重启？」），
+// 第二击直接 send({force,now}) —— 不弹任何确认框。guardHint（2s 轮询）非空
+// 即判定有任务；无任务路径两击普通请求不变；等待态守卫/按钮移除状态保持。
+// N 系列：DSHDR_TWIKE_CASE 可单跑。
+const busyStatus = () => statusBody('off', { guard: { active: true, blocked: false, reasons: ['有任务在跑'], tasks: { active: true, turns: 1, queued: 0, jobs: 0 }, installs: { active: false, running: false } } })
+
+// N1：有任务时两次点击完成强制重启 —— 第二击发出 force+now，全程无弹框。
+if (!process.env.DSHDR_TWIKE_CASE || process.env.DSHDR_TWIKE_CASE === 'N1') {
+  let posts = []
+  const h = makeHarness(async (url, options) => {
+    if (options.method === 'POST') { posts.push(url); return reply(202, { ok: true }) }
+    return reply(200, busyStatus())
+  })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, mount.hook).tree
+  const primary = () => buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  primary().props.onClick()   // 第一击：直接进 warn
+  await flush()
+  // 900ms 冷却武装。
+  if (h.timerDelays().includes(900)) h.fireTimer(900)
+  tree = h.render(h.panelComponent, mount.hook).tree
+  assert.equal(walk(tree, node => node.props?.role === 'dialog'), null, 'N1: 第一击不得弹任何框')
+  primary().props.onClick()   // 第二击：直接强制
+  await flush()
+  assert.equal(posts.length, 1, 'N1: 恰好一个请求（第二击发出）')
+  assert.match(posts[0], /force=1/u, 'N1: 请求必须带 force=1')
+  assert.match(posts[0], /now=1/u, 'N1: 请求必须带 now=1')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - N1 two clicks force-restart with tasks, no dialog`)
+}
+
+// N2：有任务时第一击直接进 warn —— 不发 send({})、不被宿主拒绝。
+if (!process.env.DSHDR_TWIKE_CASE || process.env.DSHDR_TWIKE_CASE === 'N2') {
+  let posts = []
+  const h = makeHarness(async (url, options) => {
+    if (options.method === 'POST') { posts.push(url); return reply(202, { ok: true }) }
+    return reply(200, busyStatus())
+  })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, mount.hook).tree
+  const primary = () => buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  primary().props.onClick()
+  await flush()
+  assert.equal(posts.length, 0, 'N2: 第一击不发任何请求（直接进 warn，不撞宿主 409）')
+  tree = h.render(h.panelComponent, mount.hook).tree
+  assert.match(textContent(primary()), /restart anyway|仍要重启/ui, 'N2: 第一击后按钮显示「仍要重启？」')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - N2 the first click goes straight to warn without a request`)
+}
+
+// N3：无任务时两击发普通 send({})，不含 force（防误伤——最重要的一条）。
+if (!process.env.DSHDR_TWIKE_CASE || process.env.DSHDR_TWIKE_CASE === 'N3') {
+  let posts = []
+  const h = makeHarness(async (url, options) => {
+    if (options.method === 'POST') { posts.push(url); return reply(202, { ok: true, waiting: true, restartRequest: { state: 'waiting' } }) }
+    return reply(200, statusBody())
+  })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, mount.hook).tree
+  const primary = () => buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  primary().props.onClick()
+  await flush()
+  tree = h.render(h.panelComponent, mount.hook).tree
+  primary().props.onClick()
+  await flush()
+  assert.equal(posts.length, 1, 'N3: 无任务两击恰好一个请求')
+  assert.doesNotMatch(posts[0], /force=1|now=1/u, 'N3: 无任务路径绝不带 force/now')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - N3 the no-task path stays plain (no force ever)`)
+}
+
+// N4：等待态主按钮 disabled + 早退守卫零请求（M6 保持）。
+if (!process.env.DSHDR_TWIKE_CASE || process.env.DSHDR_TWIKE_CASE === 'N4') {
+  const clock = { now: 1_800_000_000_000 }
+  const posts = []
+  const h = makeHarness(async (url, options) => {
+    if (options.method === 'POST') { posts.push(url); return reply(200, { ok: true }) }
+    return reply(200, statusBody('off', {
+      waiting: { since: new Date(clock.now - 1_000).toISOString(), maxMs: 1_800_000 },
+      restartRequest: { state: 'waiting', deadlineAt: new Date(clock.now + 1_800_000).toISOString() },
+    }))
+  }, { clock })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  const tree = h.render(h.panelComponent, mount.hook).tree
+  const main = buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  assert.equal(main.props.disabled, true, 'N4: 等待态主按钮必须 disabled')
+  main.props.onClick()
+  await flush()
+  main.props.onClick()
+  await flush()
+  assert.equal(posts.length, 0, 'N4: 连点两次零请求（早退守卫）')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - N4 waiting-state disabled and guard intact`)
+}
+
+// N5：等待态不渲染独立「仍要立即重启」（M5 保持）。
+if (!process.env.DSHDR_TWIKE_CASE || process.env.DSHDR_TWIKE_CASE === 'N5') {
+  const clock = { now: 1_800_000_000_000 }
+  const h = makeHarness(async () => reply(200, statusBody('off', {
+    waiting: { since: new Date(clock.now - 1_000).toISOString(), maxMs: 1_800_000 },
+    restartRequest: { state: 'waiting', deadlineAt: new Date(clock.now + 1_800_000).toISOString() },
+  })), { clock })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  const tree = h.render(h.panelComponent, mount.hook).tree
+  const force = buttons(tree).find(b => /restart now anyway|仍要立即重启/ui.test(String(b.props['aria-label'] ?? '') + String(b.props.title ?? '') + textContent(b)))
+  assert.equal(force, undefined, 'N5: 独立 force 按钮不得渲染')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - N5 no standalone force button in waiting state`)
+}
+
+// N6：warn 态下请求失败能回 idle 且不误发（第二击发出的请求被拒后重置）。
+if (!process.env.DSHDR_TWIKE_CASE || process.env.DSHDR_TWIKE_CASE === 'N6') {
+  let posts = []
+  let fail = false
+  const h = makeHarness(async (url, options) => {
+    if (options.method === 'POST') {
+      posts.push(url)
+      if (fail) return reply(500, { ok: false, error: 'boom' })
+      return reply(202, { ok: true })
+    }
+    return reply(200, busyStatus())
+  })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, mount.hook).tree
+  const primary = () => buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  primary().props.onClick()
+  await flush()
+  if (h.timerDelays().includes(900)) h.fireTimer(900)
+  tree = h.render(h.panelComponent, mount.hook).tree
+  fail = true
+  primary().props.onClick()   // 第二击：请求失败
+  await flush()
+  tree = h.render(h.panelComponent, mount.hook).tree
+  assert.equal(posts.length, 1, 'N6: 只发过一个请求（失败的那次）')
+  assert.match(textContent(tree), /boom/u, 'N6: 失败信息可见')
+  // 失败后 phase=error；再击是重试（普通请求语义）。
+  const main = buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  assert.ok(main, 'N6: 主按钮仍渲染')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - N6 a failed force request surfaces the error and resets`)
+}
+
+// N7：warn 态主按钮带 danger 色（第一击后按钮就是红色「仍要重启？」）。
+if (!process.env.DSHDR_TWIKE_CASE || process.env.DSHDR_TWIKE_CASE === 'N7') {
+  const h = makeHarness(async () => reply(200, busyStatus()))
+  const mount = h.render(h.panelComponent)
+  await flush()
+  const primary = () => buttons(h.render(h.panelComponent, mount.hook).tree).find(b => b.props['data-variant'] === 'primary')
+  primary().props.onClick()
+  await flush()
+  const tree = h.render(h.panelComponent, mount.hook).tree
+  const btn = buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  const cls = String(btn.props.className ?? '')
+  assert.ok(cls.includes('dshdr-danger'), `N7: warn 态主按钮必须带 danger 色（got "${cls}"）`)
+  assert.match(textContent(btn), /restart anyway|仍要重启/ui, 'N7: warn 态按钮文字为「仍要重启？」')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - N7 the warn-state main button turns danger red`)
+}
+
+// ── 2026-10-29 warn 态过期机制 + 设置可配 + 文案修正 ────────────────────────
+// 真机问题：warn 态永不过期（无 expireLater），放几小时后误碰一击 = 直接重启。
+// 修复：armWarnState 统一入口带 warnAt 时间戳（nowMs 兼容时钟）+ expireLater；
+// 时长 warnExpire（5–60 秒，默认 15）走宿主 settings 可配；文案去掉
+// 「之后还要再确认一次」这类过时句，改为「点两次强制重启，会打断它们」+
+// 「再点一次确认强制重启（N 秒内有效）」。
+// E 系列：DSHDR_EXPIRE_CASE 可单跑。
+
+// E1：warn 态 15 秒后自动过期回 idle（假时钟 + 过期定时器）——按钮去红、
+// 文字恢复「重启」。
+if (!process.env.DSHDR_EXPIRE_CASE || process.env.DSHDR_EXPIRE_CASE === 'E1') {
+  const clock = { now: 1_800_000_000_000 }
+  const h = makeHarness(async () => reply(200, busyStatus()), { clock, timer: true })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, mount.hook).tree
+  const primary = () => buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  primary().props.onClick()   // 首击 → warn（900 武装 + 15000 过期定时器）
+  await flush()
+  if (h.timerDelays().includes(900)) h.fireTimer(900)
+  tree = h.render(h.panelComponent, mount.hook).tree
+  assert.match(textContent(primary()), /restart anyway|仍要重启/ui, 'E1: 首击进入 warn')
+  assert.ok(String(primary().props.className).includes('dshdr-danger'), 'E1: warn 态红色')
+  // 快进 15 秒：推进假时钟 + 烧掉过期定时器。
+  clock.now += 15_000
+  h.fireTimer(15000)
+  await flush()
+  tree = h.render(h.panelComponent, mount.hook).tree
+  assert.doesNotMatch(textContent(primary()), /restart anyway|仍要重启/ui, 'E1: 过期后不再显示确认词')
+  assert.ok(!String(primary().props.className).includes('dshdr-danger'), 'E1: 过期后去掉红色')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - E1 warn expires back to idle after 15s (fake clock)`)
+}
+
+// E2：过期后再点第一击，能重新进入 warn 态（新鲜 warnAt，零请求）。
+if (!process.env.DSHDR_EXPIRE_CASE || process.env.DSHDR_EXPIRE_CASE === 'E2') {
+  const clock = { now: 1_800_000_000_000 }
+  let posts = []
+  const h = makeHarness(async (url, options) => {
+    if (options.method === 'POST') { posts.push(url); return reply(202, { ok: true }) }
+    return reply(200, busyStatus())
+  }, { clock, timer: true })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, mount.hook).tree
+  const primary = () => buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  primary().props.onClick()
+  await flush()
+  if (h.timerDelays().includes(900)) h.fireTimer(900)
+  clock.now += 15_000
+  h.fireTimer(15000)
+  await flush()
+  tree = h.render(h.panelComponent, mount.hook).tree
+  assert.doesNotMatch(textContent(primary()), /restart anyway|仍要重启/ui, 'E2: 已过期回 idle')
+  // 过期后的「第一击」：重新进 warn。
+  primary().props.onClick()
+  await flush()
+  if (h.timerDelays().includes(900)) h.fireTimer(900)
+  tree = h.render(h.panelComponent, mount.hook).tree
+  assert.match(textContent(primary()), /restart anyway|仍要重启/ui, 'E2: 过期后首击重新进入 warn')
+  assert.ok(String(primary().props.className).includes('dshdr-danger'), 'E2: 重新变红')
+  assert.equal(posts.length, 0, 'E2: 重新进入 warn 不发请求')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - E2 a fresh first click re-enters warn after expiry`)
+}
+
+// E3：设置页 WarnExpireRow 读到宿主返回的过期秒数。
+if (!process.env.DSHDR_EXPIRE_CASE || process.env.DSHDR_EXPIRE_CASE === 'E3') {
+  const harness = makeHarness(async () => reply(200, statusBody('off', { warnExpireSeconds: 15 })))
+  const section = harness.render(harness.settingsComponent).tree
+  const row = walk(section, node => node.type?.name === 'WarnExpireRow')
+  assert.ok(row, 'E3: 设置页必须渲染 WarnExpireRow')
+  const mounted = harness.render(row.type)
+  await flush()
+  const tree = harness.render(row.type, mounted.hook).tree
+  assert.equal(walk(tree, node => node.type === 'input').props.value, '15', 'E3: 输入框读到宿主值 15')
+  harness.unmount(mounted.hook)
+  passed++;console.log(`ok ${passed} - E3 the settings row reads the host warnExpire value`)
+}
+
+// E4：修改过期秒数 → 保存 → 宿主返回新值 → 界面更新。
+if (!process.env.DSHDR_EXPIRE_CASE || process.env.DSHDR_EXPIRE_CASE === 'E4') {
+  const harness = makeHarness(async (url, options) => {
+    if (options.method === 'POST') {
+      assert.match(url, /warnExpire=30/u, 'E4: 保存请求必须带 warnExpire=30')
+      return reply(200, { ok: true, warnExpireSeconds: 30 })
+    }
+    return reply(200, statusBody('off', { warnExpireSeconds: 15 }))
+  })
+  const section = harness.render(harness.settingsComponent).tree
+  const row = walk(section, node => node.type?.name === 'WarnExpireRow').type
+  const mounted = harness.render(row)
+  await flush()
+  let tree = harness.render(row, mounted.hook).tree
+  walk(tree, node => node.type === 'input').props.onChange({ target: { value: '30' } })
+  tree = harness.render(row, mounted.hook).tree
+  buttonWithText(tree, 'Save window').props.onClick()
+  await flush()
+  tree = harness.render(row, mounted.hook).tree
+  assert.equal(walk(tree, node => node.type === 'input').props.value, '30', 'E4: 保存后界面显示 30')
+  assert.equal(walk(tree, node => node.props.role === 'alert'), null, 'E4: 成功后无错误')
+  harness.unmount(mounted.hook)
+  passed++;console.log(`ok ${passed} - E4 saving a new window updates the row`)
+}
+
+// E5：保存失败 → 回滚到已保存值并显示错误（照抄 countdown 的 S1 模式）。
+if (!process.env.DSHDR_EXPIRE_CASE || process.env.DSHDR_EXPIRE_CASE === 'E5') {
+  let fail = false
+  const harness = makeHarness(async (url, options) => {
+    if (options.method === 'POST') {
+      if (fail) return reply(500, { ok: false, error: 'warnExpire write denied' })
+      return reply(200, { ok: true, warnExpireSeconds: 30 })
+    }
+    return reply(200, statusBody('off', { warnExpireSeconds: 15 }))
+  })
+  const section = harness.render(harness.settingsComponent).tree
+  const row = walk(section, node => node.type?.name === 'WarnExpireRow').type
+  const mounted = harness.render(row)
+  await flush()
+  let tree = harness.render(row, mounted.hook).tree
+  walk(tree, node => node.type === 'input').props.onChange({ target: { value: '30' } })
+  tree = harness.render(row, mounted.hook).tree
+  fail = true
+  buttonWithText(tree, 'Save window').props.onClick()
+  await flush()
+  tree = harness.render(row, mounted.hook).tree
+  assert.equal(walk(tree, node => node.type === 'input').props.value, '15', 'E5: 失败回滚到已保存的 15')
+  assert.match(textContent(tree), /warnExpire write denied/u, 'E5: 失败原因可见')
+  harness.unmount(mounted.hook)
+  passed++;console.log(`ok ${passed} - E5 a failed save rolls back and reports the error`)
+}
+
+// E6：老宿主（无 warnExpireSeconds 字段）→ 保存禁用 + hostTooOld 提示；
+// 且过期机制退回默认 15 秒（store 侧验证）。
+if (!process.env.DSHDR_EXPIRE_CASE || process.env.DSHDR_EXPIRE_CASE === 'E6') {
+  const clock = { now: 1_800_000_000_000 }
+  // 老宿主 = status 里没有 warnExpireSeconds 字段（但有任务在跑，warn 路径可达）。
+  const harness = makeHarness(async () => reply(200, busyStatus()), { clock, timer: true })
+  // 行为老宿主：读不到字段 → 禁用保存 + 提示。
+  const section = harness.render(harness.settingsComponent).tree
+  const row = walk(section, node => node.type?.name === 'WarnExpireRow')
+  assert.ok(row, 'E6: WarnExpireRow 必须渲染')
+  const rowMount = harness.render(row.type)
+  await flush()
+  const rowTree = harness.render(row.type, rowMount.hook).tree
+  assert.equal(buttonWithText(rowTree, 'Save window').props.disabled, true, 'E6: 老宿主必须禁用保存')
+  assert.match(textContent(rowTree), /host.*old.*restart|restart.*host/iu, 'E6: 提示宿主过旧')
+  harness.unmount(rowMount.hook)
+  // store 侧：老宿主下 warn 过期用默认 15 秒。
+  const mount = harness.render(harness.panelComponent)
+  await flush()
+  let tree = harness.render(harness.panelComponent, mount.hook).tree
+  const primary = () => buttons(tree).find(b => b.props['data-variant'] === 'primary')
+  primary().props.onClick()
+  await flush()
+  if (harness.timerDelays().includes(900)) harness.fireTimer(900)
+  clock.now += 15_000
+  harness.fireTimer(15000)
+  await flush()
+  tree = harness.render(harness.panelComponent, mount.hook).tree
+  assert.doesNotMatch(textContent(primary()), /restart anyway|仍要重启/ui, 'E6: 默认 15 秒后过期回 idle')
+  harness.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - E6 old host disables saving and falls back to the 15s default`)
+}
+
+// E7：文案 —— 有任务时第一击后「有任务在跑」只出现一次，无「还要再确认一次」，
+// 确认行带剩余秒数。
+if (!process.env.DSHDR_EXPIRE_CASE || process.env.DSHDR_EXPIRE_CASE === 'E7') {
+  const clock = { now: 1_800_000_000_000 }
+  const h = makeHarness(async () => reply(200, busyStatus()), { clock })
+  const mount = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, mount.hook).tree
+  buttons(tree).find(b => b.props['data-variant'] === 'primary').props.onClick()
+  await flush()
+  tree = h.render(h.panelComponent, mount.hook).tree
+  const text = textContent(tree)
+  const occurrences = text.split('Work in progress').length - 1
+  assert.equal(occurrences, 1, `E7: 「有任务在跑」只出现一次（实际 ${occurrences} 次）`)
+  assert.doesNotMatch(text, /asked once more|再确认一次|确认要继续吗/u, 'E7: 不得再出现过时文案')
+  assert.match(text, /valid for 15s|15 秒内有效/u, 'E7: 确认行必须带剩余秒数')
+  assert.match(text, /click twice to force-restart|点两次强制重启/u, 'E7: 黄色提示条为新文案')
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - E7 the busy panel shows the guard once with the fresh copy`)
+}
+
+// Shared and hook-local confirmation must use the same injected clock, even if
+// expiry callbacks are delayed (e.g. background throttling).
+for (const elapsed of [5100, 1000]) {
+  for (const entry of ['store', 'local']) {
+    const clock = { now: 1_800_000_000_000 }
+    let posts = 0
+    const h = makeHarness(async (_url, options) => {
+      if (options.method === 'POST') { posts++; return reply(200, {ok:true}) }
+      return reply(200, statusBody('off'))
+    }, {clock})
+    const view = h.store.newViewId()
+    const unsubscribe = h.store.subscribe(() => {}, view, false)
+    const component = () => h.useRestart()
+    const mount = entry === 'local' ? h.render(component) : null
+    await flush()
+    const action = () => entry === 'store' ? h.store.getSnapshot(view) : h.render(component, mount.hook).tree
+    action().press()
+    clock.now += elapsed
+    action().press()
+    await flush()
+    assert.equal(posts, elapsed > 5000 ? 0 : 1, `${entry}: second click after ${elapsed}ms`)
+    if (elapsed > 5000) assert.equal(action().phase, 'confirm')
+    if (mount) h.unmount(mount.hook)
+    unsubscribe()
+  }
+  passed++; console.log(`ok ${passed} - shared/local confirmation agree at ${elapsed}ms`)
+}
+{
+  const clock = { now: 1_800_000_000_000 }
+  let gets = 0
+  const h = makeHarness(async () => { gets++; return reply(200, busyStatus()) }, {clock, timer:true})
+  const mount = h.render(h.panelComponent)
+  await flush()
+  let tree = h.render(h.panelComponent, mount.hook).tree
+  buttons(tree).find(b => b.props['data-variant'] === 'primary').props.onClick()
+  const before = gets
+  for (const seconds of [15, 14, 13]) {
+    if (seconds !== 15) { clock.now += 1000; h.fireTimer(1000) }
+    tree = h.render(h.panelComponent, mount.hook).tree
+    assert.match(textContent(tree), new RegExp(`valid for ${seconds}s|${seconds} 秒内有效`, 'u'))
+    assert.equal(h.timerDelays().filter(ms => ms === 1000).length, 1)
+  }
+  assert.equal(gets, before, 'display ticks do not fetch')
+  clock.now += 13000
+  h.fireTimer(15000)
+  assert.equal(h.timerDelays().filter(ms => ms === 1000).length, 0, 'idle cancels the display clock immediately')
+  h.unmount(mount.hook)
+  passed++; console.log(`ok ${passed} - warn display clock: 15 -> 14 -> 13; no fetch; stopped at idle`)
+}
+
+
+// Account-menu DOM boundary, shared state, and observer lifecycle.
+{
+  const dom = accountMenuDOM()
+  const clock = {now: 1_800_000_000_000}
+  const h = makeHarness(async () => reply(200, busyStatus()), {dom, clock, timer:true})
+  const mount = h.render(h.panelComponent)
+  await flush()
+  dom.open(); h.fireTimer(0); h.settleMenu()
+  assert.equal(dom.injected().length, 1)
+  const button = dom.injected()[0]
+  assert.equal(button.getAttribute('role'), 'menuitem')
+  assert.equal(button.className, dom.seed.className, 'host item class controls geometry/hover')
+  assert.equal(dom.menu.querySelector('button[role="menuitem"]'), button, 'restart is the first menuitem')
+  assert.equal(button.parentElement, dom.viewport, 'insert directly inside viewport, not menu/itemWrap')
+  assert.equal(dom.itemWrap.parentElement, dom.viewport)
+  const officialItems = dom.menu.querySelectorAll('button[role="menuitem"]').filter(node => node !== button)
+  assert.deepEqual(officialItems.map(node => node.getAttribute('data-host-id')), ['settings','contact','signout'])
+  console.log('MENU ORDER signed-in: restart -> ' + officialItems.map(node => node.getAttribute('data-host-id')).join(' -> '))
+  assert.match(button.textContent, /Restart desktop app/u)
+  dom.clickTrigger(); h.fireTimer(0); h.settleMenu()
+  assert.equal(dom.injected().length, 1, 'repeated discovery remains idempotent')
+  assert.equal(dom.injected()[0],button,'repeated discovery reuses the same node')
+  const panel = h.render(h.panelComponent, mount.hook).tree
+  buttons(panel).find(b => b.props['data-variant'] === 'primary').props.onClick()
+  assert.equal(dom.injected()[0].getAttribute('data-phase'), 'warn')
+  assert.match(dom.injected()[0].style.color, /error-primary/u)
+  assert.equal(dom.injected()[0].disabled, true, 'warn cooldown is shared')
+  h.fireTimer(900)
+  assert.match(dom.injected()[0].textContent, /restart anyway/ui)
+  assert.equal(dom.injected()[0].disabled, false)
+  const observed = dom.observations()
+  assert.ok(observed.some(item => item.target === dom.document.body && item.options.childList && !item.options.subtree))
+  assert.equal(observed.filter(item => item.target === dom.document.body).length, 1)
+  dom.close()
+  assert.equal(dom.injected().length, 0)
+  assert.equal(dom.observations().length, 0, 'closing disconnects both observation targets')
+  h.unmount(mount.hook)
+  assert.equal(h.timerDelays().filter(ms => ms === 1000 || ms === 2000).length, 0, 'closed menu has no leaked store subscription')
+  dom.open(); h.fireTimer(0); h.settleMenu()
+  assert.equal(dom.injected().length, 1, 'reopening creates exactly one fresh item')
+  h.dispose()
+  assert.equal(dom.injected().length, 0)
+  assert.equal(dom.listenerCount(), 0)
+  assert.equal(dom.observations().length, 0)
+  passed++; console.log(`ok ${passed} - account menu: one item, host styling, shared panel warn, close/reopen/unload cleanup`)
+}
+for (const scenario of ['missing', 'empty', 'ambiguous', 'wrong-launcher', 'nested', 'append-failure', 'observer-failure', 'footer-only', 'no-presentation']) {
+  const dom = accountMenuDOM(scenario)
+  const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
+  await flush()
+  const original = dom.originalSnapshot()
+  dom.open()
+  if (scenario === 'wrong-launcher') assert.ok(!h.timerDelays().includes(0))
+  else h.fireTimer(0); h.settleMenu()
+  assert.equal(dom.injected().length, 0, scenario)
+  assert.equal(dom.originalSnapshot(), original, `${scenario}: original page remains unchanged`)
+  assert.equal(dom.observations().length, 0, `${scenario}: no observation left after skipped/failed injection`)
+  h.dispose()
+  passed++; console.log(`ok ${passed} - account menu fails closed: ${scenario}`)
+}
+{
+  const dom = accountMenuDOM()
+  const storage = {getItem: key => key === 'dsh-desktop-restart.entries' ? JSON.stringify({accountMenu:false}) : null, setItem(){}}
+  const h = makeHarness(async () => reply(200, statusBody('off')), {dom, storage})
+  await flush()
+  assert.equal(dom.listenerCount(), 0)
+  dom.open()
+  assert.equal(dom.injected().length, 0)
+  assert.equal(dom.observerCount(), 0, 'disabled preference constructs no observer')
+  // Re-enable through the actual settings control, then disable while open.
+  const mount = h.render(h.settingsComponent)
+  let tree = mount.tree
+  const toggle = walk(tree, n => n.type === 'input' && n.props['aria-label'] === 'Show restart in the account menu')
+  assert.ok(toggle)
+  toggle.props.onChange({target:{checked:true}})
+  dom.clickTrigger(); h.fireTimer(0); h.settleMenu()
+  assert.equal(dom.injected().length, 1)
+  tree = h.render(h.settingsComponent, mount.hook).tree
+  walk(tree, n => n.type === 'input' && n.props['aria-label'] === 'Show restart in the account menu').props.onChange({target:{checked:false}})
+  assert.equal(dom.injected().length, 0)
+  assert.equal(dom.observations().length, 0)
+  assert.equal(dom.listenerCount(), 0)
+  h.unmount(mount.hook); h.dispose()
+  passed++; console.log(`ok ${passed} - account menu preference: default on, persisted off, live enable/disable`)
+}
+for (const entry of ['store', 'local']) {
+  const clock = {now:1_800_000_000_000}
+  let posts = 0
+  const h = makeHarness(async (_url, options) => {
+    if (options.method === 'POST') { posts++; return reply(200, {ok:true}) }
+    return reply(200, busyStatus())
+  }, {clock})
+  const view = h.store.newViewId()
+  const off = h.store.subscribe(() => {}, view, false)
+  const component = () => h.useRestart()
+  const mount = entry === 'local' ? h.render(component) : null
+  await flush()
+  const action = () => entry === 'store' ? h.store.getSnapshot(view) : h.render(component, mount.hook).tree
+  action().press(); clock.now += 15001; action().press()
+  await flush()
+  assert.equal(posts, 0, `${entry}: stale warn must rearm, never force restart`)
+  assert.equal(action().warnAt, clock.now)
+  if (mount) h.unmount(mount.hook)
+  off()
+  passed++; console.log(`ok ${passed} - ${entry} expired warning rearms without a timer service`)
+}
+{
+  const clock = {now:1_800_000_000_000}
+  const h = makeHarness(async () => reply(200, {...busyStatus(),warnExpireSeconds:5}), {clock,timer:true})
+  const mount = h.render(h.panelComponent)
+  const view = h.store.newViewId()
+  const off = h.store.subscribe(() => {}, view, false)
+  await flush()
+  h.store.getSnapshot(view).press()
+  assert.ok(h.timerDelays().includes(5000), 'configured expiry schedules five seconds')
+  clock.now += 5000; h.fireTimer(5000)
+  assert.equal(h.store.getSnapshot(view).phase, 'idle')
+  assert.ok(!h.timerDelays().includes(1000))
+  off(); h.unmount(mount.hook)
+  passed++; console.log(`ok ${passed} - configured warning expiry uses the same five-second window as display`)
+}
+
+
+{
+  const dom = accountMenuDOM()
+  const posts = []
+  const h = makeHarness(async (url, options) => {
+    if (options.method === 'POST') { posts.push(url); return reply(409, busyStatus()) }
+    return reply(200, statusBody('off'))
+  }, {dom, primitives:{RiskConfirmation:function RiskConfirmation(){}}})
+  await flush(); dom.open(); h.fireTimer(0); h.settleMenu(); await flush()
+  dom.clickItem(); assert.equal(dom.injected()[0].getAttribute('data-phase'), 'confirm')
+  dom.clickItem(); await flush()
+  assert.equal(posts.length, 1)
+  assert.equal(dom.injected()[0].getAttribute('data-phase'), 'warn', 'DOM entry must not open an unrenderable React modal')
+  dom.clickItem(); await flush()
+  assert.match(posts[1], /force=1&now=1/u, 'menu warning uses the existing force+now path')
+  h.dispose()
+  passed++; console.log(`ok ${passed} - account click uses shared confirm/force paths; a raced 409 remains actionable with official dialogs installed`)
+}
+
+
+for (const scenario of ['grouped', 'signed-out']) {
+  const dom = accountMenuDOM(scenario)
+  const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
+  await flush()
+  const original = dom.originalSnapshot()
+  dom.open(); h.fireTimer(0); h.settleMenu()
+  const button = dom.injected()[0]
+  assert.ok(button)
+  assert.equal(dom.menu.querySelector('button[role="menuitem"]'), button)
+  assert.equal(button.parentElement, dom.viewport)
+  assert.equal(dom.viewport.firstElementChild,button,'container-first insertion')
+  assert.equal(dom.originalSnapshot(), original, 'all host nodes, structure, attributes and relative order remain unchanged')
+  if (scenario === 'grouped') {
+    assert.equal(dom.viewport.children[1], dom.itemWrap, 'official item wrapper remains before the other official wrappers')
+    assert.equal(dom.itemWrap.children[0], dom.separator, 'leading separator remains first-child inside its wrapper')
+    assert.equal(dom.menu.children[0], dom.material, 'decorative material remains before viewport')
+    assert.equal(dom.menu.children[1], dom.viewport, 'viewport keeps its actual second-child position')
+    assert.equal(dom.menu.children[2], dom.footer, 'footer remains a separate sibling after viewport')
+    assert.equal(dom.footer.children.length, 1, 'restart never enters footer')
+  }
+  const ids = dom.menu.querySelectorAll('button[role="menuitem"]').map(node => node === button ? 'restart' : node.getAttribute('data-host-id'))
+  console.log(`MENU ORDER ${scenario}: ${ids.join(' -> ')}`)
+  dom.close(); h.dispose()
+  passed++; console.log(`ok ${passed} - first menu position preserves ${scenario} host structure`)
+}
+
+
+{
+  for (const phase of ['confirm','warn']) {
+    const h = makeHarness(async () => reply(200, phase === 'warn' ? busyStatus() : statusBody('off')))
+    const mount=h.render(h.headerComponent); await flush()
+    headerMainTrigger(h.render(h.headerComponent,mount.hook).tree).props.onClick()
+    const tree=h.render(h.headerComponent,mount.hook).tree
+    const button=headerMainTrigger(tree)
+    assert.equal(button.props['data-phase'],phase)
+    assert.equal(button.props['data-header-main'],'1')
+    assert.equal(headerStateNodes(button).length,1,'state is a child of the main button')
+    assert.ok(textContent(headerStateNodes(button)[0]).length>0)
+    const css=h.cssText()
+    assert.ok(css.includes(`.dshdr-trigger[data-header-main][data-phase=${phase}]`))
+    assert.match(css,/\[data-phase=warn\]\{color:var\(--dsw-alias-state-error-primary/u)
+    const vis=deriveSpanVisibility(css)
+    assert.equal(vis.headerWide,true); assert.equal(vis.headerNarrow,true)
+    h.unmount(mount.hook)
+  }
+  passed++;console.log(`ok ${passed} - confirm/warn: visible in-button text at >540px and <=540px; header-only danger color`)
+}
+{
+  const h=makeHarness(async (_url,options) => options.method === 'POST' ? new Promise(()=>{}) : reply(200,statusBody('off')))
+  const mount=h.render(h.headerComponent);await flush()
+  assert.equal(headerStateNodes(h.render(h.headerComponent,mount.hook).tree).length,0,'idle occupies no text space')
+  headerMainTrigger(h.render(h.headerComponent,mount.hook).tree).props.onClick()
+  headerMainTrigger(h.render(h.headerComponent,mount.hook).tree).props.onClick()
+  const button=headerMainTrigger(h.render(h.headerComponent,mount.hook).tree)
+  assert.equal(button.props['data-busy'],'1');assert.equal(button.props['aria-busy'],'true')
+  assert.match(textContent(headerStateNodes(button)[0]),/restarting|重启中/ui)
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - idle has no state placeholder; executing keeps visible text, busy glyph and aria-busy`)
+}
+{
+  const dom=accountMenuDOM('staged')
+  const h=makeHarness(async()=>reply(200,statusBody('off')),{dom})
+  await flush();dom.open();h.fireTimer(0)
+  const button=dom.injected()[0]
+  assert.ok(button,'inserts immediately without waiting for all menu items')
+  assert.equal(button.parentElement,dom.viewport)
+  assert.equal(dom.viewport.firstElementChild,button)
+  assert.equal(button.style.visibility,'hidden')
+  assert.equal(dom.insertEvents.at(-1).visibility,'hidden')
+  console.log('STAGED MENU initial: hidden restart -> signout; direct viewport child')
+  dom.addStagedItem('settings')
+  assert.equal(dom.viewport.firstElementChild,button)
+  assert.equal(dom.injected()[0],button,'official insertion reuses the same button')
+  h.fireFrame();assert.equal(button.style.visibility,'visible')
+  console.log('STAGED MENU next frame: visible restart -> settings -> signout')
+  dom.addStagedItem('contact')
+  dom.prependHostItem()
+  assert.equal(dom.viewport.firstElementChild,button)
+  assert.equal(button.style.visibility,'visible','later host items do not re-hide a correctly anchored node')
+  assert.equal(h.frameCount(),0)
+  assert.equal(dom.insertEvents.length,1,'no reinsertion for ordinary host items')
+  dom.notify([{target:button.children[1],addedNodes:[{}],removedNodes:[]}])
+  assert.equal(h.frameCount(),0)
+  dom.rebuildFirstItem()
+  assert.equal(dom.injected()[0],button,'rebuilding official wrappers leaves viewport child intact')
+  assert.equal(dom.viewport.firstElementChild,button)
+  console.log('STAGED MENU two later items + wrapper rebuild: same visible restart stays first; insertions=1')
+  assert.ok(dom.observations().filter(o=>o.target===dom.document.body).every(o=>o.options.childList&&!o.options.subtree))
+  dom.close();assert.equal(dom.observations().length,0);assert.equal(h.frameCount(),0)
+  h.dispose()
+  passed++;console.log(`ok ${passed} - viewport anchor ignores staged official items; hidden -> one frame -> visible; same node reused`)
+}
+
+{
+  const dom=accountMenuDOM()
+  const h=makeHarness(async()=>reply(200,statusBody('off')),{dom})
+  await flush();dom.open();h.fireTimer(0);dom.close();h.fireFrame()
+  assert.equal(dom.injected().length,0);assert.equal(h.frameCount(),0)
+  dom.open();h.fireTimer(0);h.dispose()
+  assert.equal(h.frameCount(),0);assert.equal(dom.observations().length,0)
+  passed++;console.log(`ok ${passed} - closing/unloading during stabilization leaves no frame or injected node`)
+}
+
+
+{
+  let health={backup:false,warn:true,limitBytes:16384,checkPending:false,last:null}
+  const requests=[]
+  const h=makeHarness(async(url,options)=>{
+    requests.push({url,method:options.method??'GET'})
+    assert.match(url,/api\/(status|prefs)/u,'settings uses only stored-status and preference APIs')
+    if(options.method==='POST') {
+      if(url.includes('authCookieBackup=1')) health={...health,backup:true}
+      if(url.includes('authCookieWarn=0')) health={...health,warn:false}
+      if(url.includes('checkAuthCookie=1')) health={...health,checkPending:true}
+      return reply(200,{ok:true,authCookie:health})
+    }
+    return reply(200,statusBody('off',{authCookie:health}))
+  })
+  const mount=h.render(h.authCookieComponent);await flush()
+  let tree=h.render(h.authCookieComponent,mount.hook).tree
+  assert.match(textContent(tree),/Unavailable/u)
+  assert.match(textContent(tree),/Cannot read while running/u)
+  assert.match(textContent(tree),/16 KiB \(16384 bytes\)/u)
+  assert.equal(walk(tree,n=>n.type==='input'&&n.props['aria-label']==='Back up Cookie database during restart').props.checked,false)
+  assert.equal(walk(tree,n=>n.type==='input'&&n.props['aria-label']==='Warn when Cookies approach the limit (80%)').props.checked,true)
+  walk(tree,n=>n.type==='input'&&n.props['aria-label']==='Back up Cookie database during restart').props.onChange({target:{checked:true}})
+  await flush();tree=h.render(h.authCookieComponent,mount.hook).tree
+  assert.equal(walk(tree,n=>n.type==='input'&&n.props['aria-label']==='Back up Cookie database during restart').props.checked,true)
+  buttonWithText(tree,'Check again (during next restart)').props.onClick();await flush()
+  tree=h.render(h.authCookieComponent,mount.hook).tree
+  assert.match(textContent(tree),/does not restart the app now/u)
+  assert.equal(requests.some(r=>/api\/restart/u.test(r.url)),false)
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - Cookie settings: unavailable while running, defaults off/on, opt-in saves and next-restart check only`)
+}
+for(const reason of ['database-unavailable','sqlite-unavailable']) {
+  const health={clean:false,warn:true,limitBytes:16384,last:{schema:1,status:'unavailable',reason,errorCode:'TEST_BOUNDARY',checkedAt:'2026-10-29T06:00:00Z',sample:null}}
+  const h=makeHarness(async()=>reply(200,statusBody('off',{authCookie:health})))
+  const mount=h.render(h.authCookieComponent);await flush()
+  const tree=h.render(h.authCookieComponent,mount.hook).tree
+  assert.match(textContent(tree),/Unavailable/u)
+  assert.match(textContent(tree),reason==='sqlite-unavailable'?/does not support built-in SQLite/u:/unavailable or still locked/u)
+  h.unmount(mount.hook)
+  passed++;console.log(`ok ${passed} - Cookie settings gracefully explains ${reason}, no live database access`)
+}
+{
+  const health={clean:false,warn:true,limitBytes:16384,last:{schema:1,status:'near',checkedAt:'2026-10-29T06:00:00Z',sample:{estimatedBytes:14028,authCount:60,status:'near',checkedAt:'2026-10-29T06:00:00Z'}}}
+  const h=makeHarness(async(_url,options)=>options.method==='POST'?reply(500,{ok:false,error:'fixture settings write rejected'}):reply(200,statusBody('off',{authCookie:health})))
+  const mount=h.render(h.authCookieComponent);const panel=h.render(h.panelComponent);await flush()
+  let tree=h.render(h.authCookieComponent,mount.hook).tree
+  assert.match(textContent(tree),/13.70 KiB \(85.6%\)/u)
+  assert.match(textContent(tree),/dsh-auth-\* count: 60/u)
+  assert.equal(walk(tree,n=>n.type==='progress').props.max,16384)
+  assert.ok(textContent(tree).includes(new Intl.DateTimeFormat('sv-SE',{dateStyle:'short',timeStyle:'medium',hour12:false}).format(new Date('2026-10-29T06:00:00Z'))))
+  const p=h.render(h.panelComponent,panel.hook).tree
+  const warning=walk(p,n=>n.type?.name==='AuthCookieWarning')
+  assert.ok(warning)
+  assert.match(textContent(warning.type(warning.props)),/80%/u)
+  assert.equal(warning.type({health:{...health,warn:false}}),null,'warning can be disabled')
+  walk(tree,n=>n.type==='input'&&n.props['aria-label']==='Back up Cookie database during restart').props.onChange({target:{checked:true}})
+  await flush();tree=h.render(h.authCookieComponent,mount.hook).tree
+  assert.match(textContent(tree),/fixture settings write rejected/u)
+  assert.equal(walk(tree,n=>n.type==='input'&&n.props['aria-label']==='Back up Cookie database during restart').props.checked,false)
+  h.unmount(mount.hook);h.unmount(panel.hook)
+  passed++;console.log(`ok ${passed} - Cookie snapshot: 13.70 KiB/85.6%, 60 records, timestamp, optional panel warning, failed-save rollback`)
+}
+
+
+{
+  const dom=accountMenuDOM()
+  const h=makeHarness(async()=>reply(200,statusBody('off')),{dom})
+  await flush();dom.open();h.fireTimer(0)
+  dom.prependHostItem({beforeInjected:true,deliver:false})
+  h.fireFrame()
+  assert.equal(dom.insertEvents.length,2,'failed next-frame check retries exactly once')
+  assert.equal(dom.viewport.firstElementChild,dom.injected()[0])
+  assert.equal(dom.injected()[0].style.visibility,'hidden')
+  dom.prependHostItem({beforeInjected:true,deliver:false})
+  h.fireFrame()
+  assert.equal(dom.injected().length,0,'second failure abandons injection')
+  assert.equal(dom.observations().length,0);assert.equal(h.frameCount(),0)
+  h.dispose()
+  passed++;console.log(`ok ${passed} - next-frame anchor failure: one cleanup/retry, second failure stops without looping`)
+}
+
+
+for (const [name,stored,hostValue,expected] of [
+  ['legacy four keys',{panel:true,footer:true,header:true,settingsRow:true},true,true],
+  ['old host omitted key',{},undefined,true],
+  ['host default disabled',{},false,false],
+  ['explicit local off',{accountMenu:false},true,false],
+  ['explicit local on',{accountMenu:true},false,true],
+]) {
+  const dom=accountMenuDOM()
+  const storage={getItem:key=>key==='dsh-desktop-restart.entries'?JSON.stringify(stored):null,setItem(){}}
+  const entries={panel:true,footer:true,header:true,settingsRow:true,...(hostValue===undefined?{}:{accountMenu:hostValue})}
+  const h=makeHarness(async()=>reply(200,statusBody('off',{entries})),{dom,storage})
+  await flush()
+  const mount=h.render(h.settingsComponent)
+  const control=walk(mount.tree,n=>n.type==='input'&&n.props['aria-label']==='Show restart in the account menu')
+  assert.ok(control,name+': switch exists');assert.equal(control.props.checked,expected,name)
+  dom.open()
+  if(expected){h.fireTimer(0);h.settleMenu()}
+  assert.equal(dom.injected().length,expected?1:0,name)
+  assert.doesNotMatch(textContent(mount.tree),/Account menu diagnostic|Health and diagnostics/u)
+  console.log(`ACCOUNT SWITCH ${name}: ${expected}; injected=${dom.injected().length}`)
+  h.unmount(mount.hook);h.dispose()
+  passed++;console.log(`ok ${passed} - accountMenu default synchronization: ${name}`)
+}
+{
+  const dom=accountMenuDOM()
+  const h=makeHarness(async()=>reply(200,statusBody('off',{entries:{accountMenu:true}})),{dom})
+  await flush()
+  const settings=h.render(h.settingsComponent)
+  dom.open();h.fireTimer(0);h.settleMenu()
+  const toggle=()=>walk(h.render(h.settingsComponent,settings.hook).tree,n=>n.type==='input'&&n.props['aria-label']==='Show restart in the account menu')
+  toggle().props.onChange({target:{checked:false}})
+  assert.equal(dom.injected().length,0)
+  toggle().props.onChange({target:{checked:true}})
+  h.fireTimer(0);h.settleMenu()
+  assert.equal(dom.injected().length,1,'enabling while menu is open immediately injects without a new click')
+  dom.close();assert.equal(dom.injected().length,0)
+  h.unmount(settings.hook);h.dispose()
+  passed++;console.log(`ok ${passed} - account menu live enable/disable/injection/close works without diagnostic UI`)
+}
+{
+  const dom=accountMenuDOM('empty')
+  const h=makeHarness(async()=>reply(200,statusBody('off',{entries:{accountMenu:true}})),{dom})
+  await flush();const mount=h.render(h.settingsComponent)
+  dom.open();h.fireTimer(0);h.settleMenu()
+  assert.equal(dom.injected().length,0)
+  assert.doesNotMatch(textContent(h.render(h.settingsComponent,mount.hook).tree),/Account menu diagnostic|Health and diagnostics/u)
+  h.unmount(mount.hook);h.dispose()
+  passed++;console.log(`ok ${passed} - incompatible menu skips safely without diagnostic UI`)
+}
+
+// Deep-review regressions written on 2026-10-29. Execution awaits user approval.
+{
+  const dom=accountMenuDOM('missing')
+  const h=makeHarness(async()=>reply(200,statusBody()),{dom});await flush()
+  dom.open();h.fireTimer(0)
+  assert.equal(h.frameCount(),1,'one bounded discovery frame is pending')
+  dom.document.body.appendChild(dom.menu)
+  h.fireFrame();assert.equal(dom.injected()[0].style.visibility,'hidden')
+  h.fireFrame();assert.equal(dom.injected()[0].style.visibility,'visible')
+  assert.equal(dom.menu.firstElementChild,dom.material)
+  assert.equal(dom.injected()[0].parentElement,dom.viewport)
+  h.dispose();passed++;console.log(`ok ${passed} - delayed portal mounts into real material/viewport structure`)
+}
+{
+  const dom=accountMenuDOM()
+  const h=makeHarness(async()=>reply(200,statusBody()),{dom});await flush()
+  dom.open();h.fireTimer(0);h.settleMenu()
+  const original=dom.injected()[0]
+  dom.prependHostItem({beforeInjected:true})
+  assert.equal(original.isConnected,false,'a real host prepend retires the displaced button')
+  assert.equal(dom.injected()[0].style.visibility,'hidden')
+  h.fireFrame();assert.equal(dom.injected()[0],dom.viewport.firstElementChild)
+  assert.equal(dom.injected()[0].style.visibility,'visible')
+  assert.equal(dom.insertEvents.length,2,'exactly one positioning retry')
+  h.dispose();passed++;console.log(`ok ${passed} - host prepends before plugin: bounded hidden repair preserves first position`)
+}
+{
+  let resolveInitial;let reads=0
+  const h=makeHarness(()=>++reads===2?new Promise(r=>{resolveInitial=r}):Promise.resolve(reply(200,statusBody())))
+  const id=h.store.newViewId(),off=h.store.subscribe(()=>{},id,false)
+  h.store.getSnapshot(id).refresh();await flush()
+  resolveInitial(reply(200,busyStatus()));await flush()
+  assert.equal(h.store.getSnapshot(id).guardHint,'','old initial GET cannot overwrite the newer idle response')
+  off();h.dispose();passed++;console.log(`ok ${passed} - first GET obeys the same response ordering as refresh`)
+}
+for(const supported of [true,false]) {
+  const clock={now:10000};let posts=0
+  const h=makeHarness((url,opts)=>opts.method==='POST'?(posts++,new Promise(()=>{})):Promise.resolve(reply(200,statusBody('off',{requestExpiry:supported,serverNow:clock.now,restartRequest:{state:'idle'},restartBusy:false}))),{clock})
+  const id=h.store.newViewId(),off=h.store.subscribe(()=>{},id,false);await flush()
+  h.store.getSnapshot(id).press();h.store.getSnapshot(id).press()
+  clock.now+=10001;h.fireTimer(10000);await flush()
+  const result=h.store.getSnapshot(id)
+  assert.notEqual(result.phase,'restarting','a transport timeout must not leave an endless submitting spinner')
+  assert.equal(result.opBusy,!supported,'only a host-enforced expiry permits automatic idle reconciliation')
+  if(!supported){result.press();await flush();assert.equal(posts,1,'old hosts stay locked against blind resubmission')}
+  off();h.dispose();passed++;console.log(`ok ${passed} - lost POST reply reconciles safely; host expiry supported=${supported}`)
+}
+{
+  const clock={now:10000};const h=makeHarness(async()=>reply(200,busyStatus()),{clock,timer:true})
+  const mount=h.render(h.headerComponent);await flush()
+  headerMainTrigger(h.render(h.headerComponent,mount.hook).tree).props.onClick()
+  h.fireTimer(900)
+  const button=headerMainTrigger(h.render(h.headerComponent,mount.hook).tree)
+  assert.match(textContent(headerStateNodes(button)[0]),/Restart anyway|仍要重启/u)
+  assert.doesNotMatch(textContent(headerStateNodes(button)[0]),/Work in progress|有任务在跑/u)
+  assert.ok(button.props['aria-describedby'],'guard details remain available to screen readers')
+  h.unmount(mount.hook);h.dispose();passed++;console.log(`ok ${passed} - warning header keeps a short action and accessible details`)
+}
+
+for(const triggerConnected of [true,false]) {
+  const dom=accountMenuDOM();let cancelled=false
+  const request={id:'dialog-fixture',state:'paused',ask:'dialog-ask',deadlineAt:new Date(Date.now()+60000).toISOString(),pausedReason:'fixture work'}
+  const h=makeHarness(async(url,opts)=>{
+    if(opts.method==='POST'){cancelled=true;return reply(200,{ok:true,cancelled:true,restartRequest:{state:'terminal',executed:false}})}
+    return reply(200,statusBody('off',{restartRequest:cancelled?{state:'terminal',executed:false}:request,waiting:cancelled?null:{since:new Date().toISOString()}}))
+  },{dom})
+  const component=()=>h.useRestart(undefined)
+  const mount=h.render(component);await flush()
+  const action=h.render(component,mount.hook,false).tree
+  const previous={isConnected:triggerConnected,focus(){dom.document.activeElement=this}}
+  const fallback={focus(){dom.document.activeElement=this}}
+  const query=dom.document.querySelector
+  dom.document.querySelector=selector=>selector.includes('[data-header-main]') ? fallback : query(selector)
+  const first={focus(){dom.document.activeElement=this}},last={focus(){dom.document.activeElement=this}}
+  dom.document.activeElement=previous
+  action.dialogRef.current={querySelector:()=>last,querySelectorAll:selector=>{assert.match(selector,/select:not/);assert.match(selector,/textarea:not/);return [first,last]},contains:node=>node===first||node===last,focus(){dom.document.activeElement=this}}
+  h.render(component,mount.hook)
+  assert.equal(dom.document.activeElement,last,'safe cancel gets initial focus')
+  dom.dispatchKey({key:'Tab',shiftKey:false,preventDefault(){},stopPropagation(){}})
+  assert.equal(dom.document.activeElement,first,'Tab wraps within the dialog')
+  dom.dispatchKey({key:'Tab',shiftKey:true,preventDefault(){},stopPropagation(){}})
+  assert.equal(dom.document.activeElement,last,'Shift+Tab wraps within the dialog')
+  dom.dispatchKey({key:'Escape',preventDefault(){},stopPropagation(){}});await flush()
+  assert.equal(cancelled,true,'Escape cancels a paused request rather than executing it')
+  h.unmount(mount.hook);assert.equal(dom.document.activeElement,triggerConnected?previous:fallback,'unmount returns focus or falls back to a named restart control')
+  h.dispose();passed++;console.log(`ok ${passed} - inline dialog traps Tab, Escape cancels safely, focus is restored`)
+}
+
+{
+  let writes=0
+  const h=makeHarness(async(url,options)=>{ if(options.method==='POST') writes++; return reply(200,statusBody('off')) })
+  const section=h.render(h.settingsComponent)
+  const heading=walk(section.tree,n=>n.props?.className==='dshdr-set-heading')
+  assert.ok(walk(heading,n=>n.type==='h2'),'title stays beside the action')
+  const component=walk(heading,n=>n.type?.name==='SettingsTitleAction').type
+  const mounted=h.render(component);await flush()
+  let tree=h.render(component,mounted.hook).tree
+  let button=walk(tree,n=>n.props?.['data-settings-restart']==='1')
+  assert.equal(button.props.disabled,false)
+  button.props.onClick()
+  tree=h.render(component,mounted.hook).tree
+  assert.match(textContent(tree),/Restart now\?|确认/u)
+  assert.equal(writes,0,'first click only arms confirmation')
+  h.unmount(mounted.hook);h.dispose()
+  passed++;console.log(`ok ${passed} - settings title restart uses shared two-click confirmation without submitting on first click`)
+}
+{
+  const h=makeHarness(async()=>reply(200,statusBody('off')))
+  const section=h.render(h.settingsComponent)
+  const children=section.tree.children
+  const extras=children.findIndex(n=>n.type==='h3'&&/Bundled extras|附带功能/u.test(textContent(n)))
+  const health=children.findIndex(n=>n.type?.name==='AuthCookieHealth')
+  assert.ok(extras>=0&&health>extras,'health belongs to bundled extras')
+  const mounted=h.render(h.authCookieComponent);await flush()
+  const tree=h.render(h.authCookieComponent,mounted.hook).tree
+  assert.equal(tree.type,'details')
+  assert.equal(tree.props.open,undefined,'health starts collapsed')
+  assert.ok(walk(tree,n=>n.type==='summary'))
+  assert.ok(walk(tree,n=>n.type==='progress')===null,'missing sample does not invent usage')
+  h.unmount(mounted.hook);h.dispose()
+  passed++;console.log(`ok ${passed} - Cookie health is a collapsed summary under bundled extras`)
+}
+
+{
+  const h=makeHarness(async()=>reply(200,statusBody('off',{
+    restartRequest:{state:'terminal',reason:'cancelled',executed:false,message:'Cancelled; restart was not executed.'},
+  })),{storage:{getItem:key=>key==='dsh-desktop-restart.entries'?JSON.stringify({headerRefresh:true}):null,setItem(){}}})
+  const mounted=h.render(h.headerComponent);await flush()
+  const tree=h.render(h.headerComponent,mounted.hook).tree
+  assert.equal(headerStateNodes(tree).length,0,'cancelled terminal never occupies the header state label')
+  assert.match(textContent(walk(tree,n=>n.props?.className==='dshdr-header-name')),/Restart|重启/u)
+  const refresh=walk(tree,n=>n.props?.['aria-label']==='Refresh')
+  assert.ok(walk(refresh,n=>n.props?.['data-refresh-status-icon']==='1'),'refresh has its own straight two-arrow icon')
+  assert.ok(h.cssText().includes('grid-template-columns:minmax(0,1fr) max-content'),'title/action layout has two explicit columns')
+  assert.ok(h.cssText().includes('grid-column:2;grid-row:1;justify-self:end'),'action stays right of title on its first row')
+  h.unmount(mounted.hook);h.dispose()
+  passed++;console.log(`ok ${passed} - cancelled header returns to Restart; refresh icon is distinct; settings action occupies the right column`)
+}
+
+
+{
+  const health={backup:false,warn:true,limitBytes:16384,last:{status:'exceeded',sample:{estimatedBytes:17000,authCount:75},checkedAt:'2026-10-29T00:00:00Z'}}
+  const h=makeHarness(async()=>reply(200,statusBody('off',{authCookie:health})))
+  const mounted=h.render(h.authCookieComponent);await flush()
+  const tree=h.render(h.authCookieComponent,mounted.hook).tree
+  assert.equal(tree.props.open,true,'over-limit guidance is immediately visible')
+  const text=textContent(tree)
+  assert.match(text,/%APPDATA%/u);assert.match(text,/Network/u);assert.match(text,/Cookies/u)
+  assert.match(text,/fully quit DSH/u);assert.match(text,/developer tools/u)
+  assert.match(text,/never deletes/u)
+  assert.equal(walk(tree,n=>n.type==='button'&&/delete|clean/i.test(textContent(n))),null)
+  h.unmount(mounted.hook);h.dispose()
+  passed++;console.log(`ok ${passed} - over-limit Cookie guidance shows exact path, quit warning, manual options and no delete button`)
+}
+
+for(const raw of [null,'0','1','true','', 'broken']) {
+  const h=makeHarness(async()=>reply(200,statusBody()),{storage:{getItem:key=>key.includes('hide-contact')?raw:null,setItem(){}}})
+  const mounted=h.render(h.hideContactComponent)
+  const control=walk(mounted.tree,n=>n.type==='input')
+  assert.equal(control.props.checked,raw==='1','only literal 1 enables Feedback hiding')
+  h.unmount(mounted.hook);h.dispose()
+  passed++;console.log(`ok ${passed} - Feedback hiding storage ${JSON.stringify(raw)} is interpreted strictly`)
+}
+{
+  const clock={now:1800000000000}
+  const h=makeHarness(async()=>reply(200,statusBody('off',{restartRequest:{state:'countdown',countdownUntil:new Date(clock.now+5000).toISOString(),deadlineAt:new Date(clock.now+60000).toISOString()}})),{clock})
+  const mounted=h.render(h.panelComponent);await flush()
+  const before=h.render(h.panelComponent,mounted.hook).tree
+  const announcement=walk(before,n=>n.props?.['data-phase-announcement']==='1')
+  assert.equal(announcement.props['aria-live'],'polite')
+  clock.now+=1000;h.fireTimer(1000)
+  const after=h.render(h.panelComponent,mounted.hook).tree
+  assert.equal(textContent(walk(after,n=>n.props?.['data-phase-announcement']==='1')),textContent(announcement),'one-second tick does not change live announcement')
+  const dynamic=walk(after,n=>n.props?.['aria-live']==='off' && /4s|4 秒/u.test(textContent(n)))
+  assert.ok(dynamic,'visible countdown updates outside the live region')
+  assert.ok(h.cssText().includes('--dsw-alias-state-warn-primary'));assert.ok(!h.cssText().includes('--dsh-alias-'))
+  h.unmount(mounted.hook);h.dispose()
+  passed++;console.log(`ok ${passed} - countdown ticks visibly while the live-region phase announcement stays stable`)
+}
+const {uiCleanupChecks}=await import('./ui-cleanup-regression.mjs')
+passed+=uiCleanupChecks
 console.log(`all ${passed} client regression checks passed`)

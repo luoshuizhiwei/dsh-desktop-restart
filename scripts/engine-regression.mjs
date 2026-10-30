@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, basename, dirname, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
-import { createRequire } from 'node:module'
+import {createRequire} from 'node:module'
 import { MIN_ORPHAN_AGE_MS, sweepOrphanSnapshots } from '../lib/sweep.js'
 
 const root = dirname(fileURLToPath(import.meta.url))
@@ -16,7 +16,7 @@ function makeProcess(pid, parentPid, path, createdAt, commandLine = 'app.exe') {
   return { pid, parentPid, path, createdAt: new Date(createdAt).toISOString(), commandLine }
 }
 
-function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false }) {
+function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false }) {
   let clock = Date.now()
   const main = makeProcess(100, 1, targetExe, clock - 20_000, '"C:\\DSH\\app.exe" --user-data-dir=C:\\profile-A')
   const host = makeProcess(101, 100, targetExe, clock - 15_000, '"C:\\DSH\\app.exe" --expose-internals')
@@ -29,9 +29,15 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
   const noticesSent = []
   const notes = []
   const launchEnvs = []
+  let cimReads=0
   const operationFiles = new Map()
   const opPath = 'C:\\virtual\\desktop-restart\\op-restart-test-123.json'
   operationFiles.set(opPath, JSON.stringify({ id: 'restart-test-123', schema: 1, phase: 'scheduled', result: 'pending', pid: null, hostPid: 101, startedAt: new Date(clock).toISOString(), stages: {} }))
+  const originalOp = operationFiles.get(opPath)
+  if (missingOp) operationFiles.delete(opPath)
+  if (opReadError === 'json') operationFiles.set(opPath, '{broken json')
+  const lockPath='C:\\virtual\\restart.lock'
+  if (withLock) operationFiles.set(lockPath,JSON.stringify({pid:101,token:'restart-test-123',at:new Date(clock).toISOString()}))
   const listeners = new Map()
   if (foreignListener) listeners.set(18000, 201)
   if (startNewHost) listeners.set(19001, 301)
@@ -49,10 +55,13 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
         const pid = Number(args[args.indexOf('/PID') + 1])
         killed.push(pid)
         processes.delete(pid)
+        if (authCookieFailure && !keepOldHost && pid === 100) { processes.delete(101); processes.delete(103) }
         for (const [port, owner] of listeners) if (owner === pid) listeners.delete(port)
         return ''
       }
       if (command === 'powershell.exe' || command === 'pwsh.exe') {
+        cimReads++
+        if(disappearBeforeKill && cimReads===3) processes.delete(100)
         const rows = [...processes.values()].filter((entry) => win32.basename(entry.path).toLowerCase() === 'app.exe')
         const result = rows.map((entry) => ({
           ProcessId: entry.pid,
@@ -72,7 +81,11 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
         const launchedAt = clock
         processes.set(300, makeProcess(300, 1, targetExe, launchedAt, '"C:\\DSH\\app.exe" --user-data-dir=C:\\profile-A'))
         if (startNewHost) {
-          processes.set(301, makeProcess(301, 300, targetExe, launchedAt + 10, '"C:\\DSH\\app.exe" --expose-internals'))
+          processes.set(301, makeProcess(301, 300, targetExe, launchedAt, '"C:\\DSH\\app.exe" --expose-internals'))
+          if(acknowledgeRecovery) {
+            const previous=JSON.parse(operationFiles.get(opPath))
+            operationFiles.set(opPath,JSON.stringify({...previous,profileId:'engine-fixture',readyHostPid:301,hostReadyAt:new Date(launchedAt).toISOString(),clientReadyAt:new Date(launchedAt).toISOString()}))
+          }
         }
         return { pid: 300, on() { return this }, unref() {} }
       }
@@ -84,7 +97,7 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
     pid: 102,
     ppid: 101,
     argv: [],
-    env: { ELECTRON_RUN_AS_NODE: '1', DSH_DESKTOP_RESTART_ID: 'old' },
+    env: { ELECTRON_RUN_AS_NODE: '1', DSH_DESKTOP_RESTART_ID: 'old', ...(privateExe ? {DSH_DESKTOP_RESTART_EXE:targetExe} : {}) },
     kill(pid) {
       if (!processes.has(pid)) { const error = new Error('gone'); error.code = 'ESRCH'; throw error }
     },
@@ -109,25 +122,36 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
     if (specifier === 'node:child_process') return childProcess
     if (specifier === 'node:fs') return {
       readFileSync(file) {
+        if (String(file)===opPath && opReadError === 'EACCES') { const e=new Error('locked fixture');e.code='EACCES';throw e }
         if (!operationFiles.has(String(file))) { const error = new Error('ENOENT'); error.code = 'ENOENT'; throw error }
         return operationFiles.get(String(file))
       },
       mkdirSync() {},
+      unlinkSync(file){operationFiles.delete(String(file))},
       statSync(file) {if(operationFiles.has(String(file))) return {mtimeMs:0,ctimeMs:0,size:Buffer.byteLength(operationFiles.get(String(file)))};if(String(file)===win32.dirname(opPath)) return {mtimeMs:operationFiles.size,ctimeMs:operationFiles.size,size:0};const e=new Error('missing');e.code='ENOENT';throw e},
       existsSync: file => operationFiles.has(String(file)),
       readdirSync: dir => [...operationFiles.keys()].filter(file=>win32.dirname(file)===dir).map(file=>win32.basename(file)),
       writeFileSync(file, text, options) {
         if (options?.flag === 'wx' && operationFiles.has(String(file))) {const e=new Error('exists');e.code='EEXIST';throw e}
-        if (failOperationWrite || (failIdentityWrite && String(text).includes('"helperIdentity"'))) throw new Error('simulated operation record write failure')
+        if (finalWriteFailure && String(file).startsWith(opPath) && (String(text).includes('"result":"ok"') || String(text).includes('"stages":{"verify"'))) throw new Error('fixture final/timing disk full')
+        if ((failOperationWrite && String(file).startsWith(opPath)) || (failIdentityWrite && String(text).includes('"helperIdentity"'))) throw new Error('simulated operation record write failure')
         operationFiles.set(String(file), String(text))
       },
       renameSync(from, to) { operationFiles.set(String(to), operationFiles.get(String(from))); operationFiles.delete(String(from)) },
+    }
+    if (specifier === 'node:sqlite' && authCookieFailure) return {
+      DatabaseSync:class {
+        constructor(){if(authCookieFailure!=='delete'){const e=new Error('isolated fake Cookie DB locked');e.code='SQLITE_BUSY';throw e}}
+        prepare(sql){return sql.startsWith('SELECT')?{get:()=>({count:60,bytes:13560,authCount:60})}:{run(){const e=new Error('isolated fixture DELETE denied');e.code='SQLITE_IOERR';throw e}}}
+        exec(sql){notes.push('fixture SQLite '+sql)}
+        close(){}
+      },
+      backup:async()=>{notes.push('fixture consistent backup completed')},
     }
     if (specifier === 'node:net') return fakeNet
     if (specifier === 'node:path') return win32
     throw new Error(`Unexpected module in fake: ${specifier}`)
   }
-  const require = createRequire(import.meta.url)
   const module = { exports: {} }
   fakeRequire.main = {}
   vm.runInNewContext(helperSource, {
@@ -159,9 +183,18 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
     alertOnFailure: notifications,
     profileId: 'engine-fixture',
   }
+  if (authCookieFailure) {
+    operationFiles.set('C:\\profile-A\\Network\\Cookies','fixture')
+    handoff.authCookie={databasePath:'C:\\virtual\\Cookies',statePath:'C:\\virtual\\health.json',backupDir:'C:\\virtual\\backups',clean:true}
+  }
   // 旧宿主（0.4.4）的交接里没有 opPath —— 真机 2026-10-22 因此死锁过。
   if (legacyHandoff) delete handoff.opPath
-  return helperApi.performRestart(handoff, (line) => notes.push(line)).then(() => ({ noticesSent, noticeRecords:[...operationFiles.entries()].filter(([file])=>win32.basename(file).startsWith('notice-') && file.endsWith('.json')).map(([,value])=>JSON.parse(value)), killed, notes, launchEnvs, processes: [...processes.keys()], listeners: [...listeners], operation: legacyHandoff ? null : JSON.parse(operationFiles.get(opPath)), cimReadResult: helperApi.queryApplicationProcesses('app.exe') }))
+  if (withLock) handoff.restartLock={path:lockPath,token:'restart-test-123'}
+  if (privateExe) {handoff.exe=win32.basename(targetExe);handoff.exeFromEnv=true}
+  if (badHandoff) handoff.mainPid=0
+  if (throwCore) handoff.mainPid={valueOf(){throw new Error('fixture unexpected core failure')}}
+  let coreError=null
+  return helperApi.performRestart(handoff, (line) => notes.push(line)).catch(error=>{if(!throwCore)throw error;coreError=error.message}).then(() => ({ coreError, noticesSent, noticeRecords:[...operationFiles.entries()].filter(([file])=>win32.basename(file).startsWith('notice-') && file.endsWith('.json')).map(([,value])=>JSON.parse(value)), originalOp, rawOp:operationFiles.get(opPath), lockPresent:operationFiles.has(lockPath), cookieHealth:authCookieFailure?JSON.parse(operationFiles.get('C:\\virtual\\health.json')):null, killed, notes, launchEnvs, processes: [...processes.keys()], listeners: [...listeners], operation: legacyHandoff ? null : (opReadError === 'json' ? null : JSON.parse(operationFiles.get(opPath))), cimReadResult: helperApi.queryApplicationProcesses('app.exe') }))
 }
 
 // Same image and same executable, different profile: only the old host tree is eligible.
@@ -193,13 +226,20 @@ const foreignListenerOnly = await runHelperScenario({
 })
 assert.equal(foreignListenerOnly.launchEnvs.length, 1, 'readiness case reaches new-instance launch')
 assert(!foreignListenerOnly.notes.some((line) => line.includes('restart complete')), 'another profile listener is not readiness')
-assert(foreignListenerOnly.notes.some((line) => line.includes('its verified host has no listening port')), 'foreign listener is rejected by verified-host readiness filtering')
+assert.equal(foreignListenerOnly.operation.reason,'ready-unconfirmed','a foreign listener cannot establish host/client readiness')
 
-// A dynamic listener owned by the new main's verified host child is accepted.
+// Both verified transport and matching host/client receipts are required.
 const newHostReady = await runHelperScenario({ foreignPath: targetExe, foreignListener: false, startNewHost: true })
-assert(newHostReady.notes.some((line) => line.includes('listening on port 19001')), 'new host descendant dynamic port is readiness')
+assert(newHostReady.notes.some((line) => line.includes('acknowledged recovery on port 19001')), 'nonce-bound host and client acknowledge the verified transport')
 assert.equal(newHostReady.launchEnvs[0].DSH_DESKTOP_RESTART_ID, 'restart-test-123', 'handoff nonce reaches the new host environment')
 assert.equal(newHostReady.launchEnvs[0].ELECTRON_RUN_AS_NODE, undefined, 'Node mode is still removed')
+
+const listenerWithoutReceipt=await runHelperScenario({foreignListener:false,startNewHost:true,acknowledgeRecovery:false})
+assert.equal(listenerWithoutReceipt.operation.result,'unknown')
+assert.equal(listenerWithoutReceipt.operation.reason,'ready-unconfirmed','an inspector-only listener is not success')
+const exitedBeforeKill=await runHelperScenario({foreignListener:false,startNewHost:true,disappearBeforeKill:true})
+assert.equal(exitedBeforeKill.operation.result,'ok')
+assert.ok(!exitedBeforeKill.killed.includes(100),'an already-exited main does not require taskkill')
 
 const operationWriteFailure = await runHelperScenario({ foreignListener: false, failOperationWrite: true })
 assert.deepEqual(operationWriteFailure.killed, [], 'helper refuses to stop processes when operation state cannot be persisted')
@@ -240,9 +280,9 @@ try {
       return { isDirectory: () => true, birthtimeMs: old.getTime(), ctimeMs: old.getTime(), mtimeMs: rootMtimeAfter }
     },
   })
-  assert.deepEqual(preview.removed, [], 'missing owner proof is preview-only')
+  assert.deepEqual(preview.removed, [], 'snapshot scanning is always preview-only')
   assert.equal(preview.candidates.length, 0, 'recent child content write excludes active tree')
-  assert.equal(preview.skipReason, 'owner-unknown', 'unknown owners are reported')
+  assert.equal(preview.skipReason, 'preview-only', 'unknown owners are reported')
 
   const oldCandidate = join(tempRoot, 'dsh-workspace-changes-old')
   mkdirSync(oldCandidate)
@@ -261,21 +301,8 @@ try {
     },
   })
   assert(ownerUnknown.candidates.some((entry) => entry.name === basename(oldCandidate)), 'old directory appears in preview')
-  assert(ownerUnknown.skipped.some((entry) => entry.name === basename(oldCandidate) && entry.reason === 'owner-unknown'), 'preview explains the owner skip')
-  assert.equal(ownerUnknown.removed.length, 0, 'preview never deletes without owner proof')
-  const ownerKnown = await sweepOrphanSnapshots({
-    tempRoot,
-    startedAtMs: Date.now() + 60_000,
-    minAgeMs: 0,
-    ownerCheck: { known: true, activeHosts: [] },
-    statOf: async (target) => {
-      const info = await stats.stat(target)
-      return target === oldCandidate
-        ? { isDirectory: () => true, birthtimeMs: oldCreated, ctimeMs: oldCreated, mtimeMs: oldCreated }
-        : info
-    },
-  })
-  assert(ownerKnown.removed.includes(basename(oldCandidate)), 'explicit owner proof enables deletion')
+  assert(ownerUnknown.skipped.some((entry) => entry.name === basename(oldCandidate) && entry.reason === 'preview-only'), 'preview explains why candidates remain')
+  assert.equal(ownerUnknown.removed.length, 0, 'preview never deletes')
   assert.equal(realStat.isDirectory(), true)
 } finally {
   rmSync(fixture, { recursive: true, force: true })
@@ -398,7 +425,7 @@ console.log(JSON.stringify({
     sameExeOtherProfileKilled: sameExeOtherProfile.killed,
     otherInstallKilled: otherInstall.killed,
     foreignListenerAccepted: foreignListenerOnly.notes.some((line) => line.includes('restart complete')),
-    newHostPortAccepted: newHostReady.notes.some((line) => line.includes('listening on port 19001')),
+    newHostAndClientAcknowledged: newHostReady.notes.some((line) => line.includes('acknowledged recovery on port 19001')),
     operationWriteFailureStoppedNoProcesses: operationWriteFailure.killed.length === 0,
     identityWriteFailureStoppedNoProcesses: identityWriteFailure.killed.length === 0,
     incompleteCimQueryFailsClosed: incompleteCim.cimReadResult === null && incompleteCim.killed.length === 0,
@@ -406,8 +433,54 @@ console.log(JSON.stringify({
   sweep: {
     activeChildRewriteKeptRootMtime: true,
     recursiveChildMtimeExcludedActiveTree: true,
-    unknownOwnerPreviewOnly: true,
-    explicitEmptyOwnerSetAllowsInternalDelete: true,
+    snapshotPreviewOnly: true,
+    snapshotPreviewNeverDeletes: true,
     minAgeMs: MIN_ORPHAN_AGE_MS,
   },
 }, null, 2))
+
+const cookieFailureRun=await runHelperScenario({foreignListener:false,startNewHost:true,authCookieFailure:true})
+assert.equal(cookieFailureRun.operation.result,'ok','Cookie DB failure must not stop restart')
+assert.equal(cookieFailureRun.cookieHealth.status,'unavailable')
+assert.equal(cookieFailureRun.cookieHealth.reason,'database-unavailable')
+console.log('PASS AUTH COOKIE: helper continues successful restart after Cookie database failure')
+const oldHostSurvives=await runHelperScenario({foreignListener:false,startNewHost:true,authCookieFailure:true,keepOldHost:true})
+assert.equal(oldHostSurvives.cookieHealth.reason,'old-instance-running','main absence must not hide the surviving old host')
+assert.equal(oldHostSurvives.cookieHealth.cleanup.performed,false)
+assert.equal(oldHostSurvives.operation.result,'ok','skip Cookie access and continue restart')
+console.log('PASS AUTH COOKIE: surviving old host skips SQLite despite exited main')
+await import('./auth-cookie-regression.mjs')
+
+for (const opReadError of ['EACCES','json']) {
+  const r=await runHelperScenario({opReadError,withLock:true})
+  assert.equal(r.killed.length,0)
+  assert.equal(r.launchEnvs.length,0)
+  assert.equal(r.rawOp,opReadError === 'json' ? '{broken json' : r.originalOp)
+  assert.ok(r.notes.some(n=>n.includes('original record preserved')))
+  assert.equal(r.lockPresent,false)
+  console.log('PASS BATCH1-3: '+opReadError+' preserves original bytes; no stop or launch; lock released')
+}
+const firstOp=await runHelperScenario({missingOp:true,foreignListener:false,startNewHost:true,withLock:true})
+assert.equal(firstOp.operation.result,'ok');assert.equal(firstOp.lockPresent,false)
+console.log('PASS BATCH1-3: ENOENT creates first operation record; normal restart and lock release succeed')
+const failedRecord=await runHelperScenario({badHandoff:true,failOperationWrite:true,withLock:true})
+assert.ok(failedRecord.notes.some(n=>n.includes('result could not be persisted: failed/bad-handoff')))
+assert.equal(failedRecord.lockPresent,false)
+console.log('PASS BATCH1-4 log: '+failedRecord.notes.find(n=>n.includes('result could not be persisted')))
+const finalRecord=await runHelperScenario({foreignListener:false,startNewHost:true,finalWriteFailure:true})
+assert.ok(finalRecord.notes.some(n=>n.includes('result could not be persisted: ok; restart itself completed')))
+assert.ok(finalRecord.notes.some(n=>n.includes('timing could not be persisted')))
+assert.ok(finalRecord.killed.includes(100));assert.equal(finalRecord.launchEnvs.length,1)
+console.log('PASS BATCH1-4 log: '+finalRecord.notes.find(n=>n.includes('result could not be persisted: ok')))
+const abnormal=await runHelperScenario({withLock:true,throwCore:true})
+assert.match(abnormal.coreError,/unexpected core failure/);assert.equal(abnormal.lockPresent,false)
+console.log('PASS BATCH1-1: unexpected helper exception releases owned lock')
+
+await import('./batch1-lock-regression.mjs')
+
+const privateTransport=await runHelperScenario({foreignListener:false,startNewHost:true,privateExe:true})
+assert.equal(privateTransport.operation.result,'ok')
+assert.ok(!privateTransport.notes.join(' ').includes(targetExe))
+assert.ok(!privateTransport.notes.join(' ').includes('--user-data-dir'))
+assert.equal(privateTransport.launchEnvs[0].DSH_DESKTOP_RESTART_EXE,undefined)
+console.log('PASS BATCH2-14/15: basename handoff, child-only executable transport, redacted log, no private transport inherited by relaunched app')

@@ -1,5 +1,7 @@
 # dsh-desktop-restart
 
+This worktree passed the full npm test suite after batch-one safety fixes on 2026-10-29. The new cross-process lock and read-only Cookie backup have not been accepted through a real DSH restart. Earlier desktop restarts establish only the source tested then. The package remains 0.4.5 and differs from the published release.
+
 English | **[简体中文](README.md)**
 
 A restart plugin for the **DeepSeek Harness desktop app (Electron)**. It adds a **"Restart Desktop App"** entry at the **top of the left sidebar** (mounted on the official panel slot for third-party plugins — the row itself is drawn by the sidebar, so it looks exactly native), another entry at the **bottom of the sidebar**, a button in the conversation header, a `/restart-desktop` slash command, and a row under Settings → General. Which entries exist is up to you — toggle them in the plugin's own settings section.
@@ -13,7 +15,7 @@ Besides restarting, it also ships two small extras (grouped under one **"Bundled
 
 Version 0.4.5 is the current release. HTTP 202 means scheduling was accepted; the UI continues reading the host's actual progress and result. A failed status read preserves the last confirmed operation and offers a retry. If the helper's identity or execution outcome cannot be established, another restart remains blocked; manually quit and reopen the desktop app when required instead of clearing records to bypass the lock.
 
-Snapshot permission errors and incomplete scans are reported separately, and candidate sizes are estimates. The real-DSH end-to-end restart chain (including downtime measurement and the restart receipt) has been accepted; screen-reader acceptance has not been performed, and offline tests do not establish it.
+Snapshot permission errors and incomplete scans are reported separately, and candidate sizes are estimates. The real-DSH restart chain, host/client recovery receipts and handoff duration were verified locally; the duration is not exact UI downtime. Screen-reader acceptance has not been performed, and offline tests do not establish it.
 
 The desktop app's process model is nothing like `dsh web` in a terminal:
 
@@ -99,42 +101,56 @@ After installing, **restart the app once** to load it — that first restart has
 
 ## Usage
 
-Five entries, all through the same guarded path:
+Five action entries and a read-only settings row share host state:
 
 1. **"Restart App" at the top of the left sidebar** — mounted on the official panel slot for third-party plugins (`sidebar.panellist` + `main`); **the row is drawn by the sidebar itself**, so it looks native. Clicking opens the restart panel in the main area; click "Restart" there.
 2. **"Restart App" at the bottom of the sidebar** — the official action slot for third-party plugins (a 42px action row; 36×36 circle when the sidebar is collapsed). Click twice to restart.
 3. **Conversation header button** — the refresh icon + "Restart" at the right of the conversation header.
 4. **Slash command** — type `/restart-desktop` in the composer.
-5. **Settings → General → Restart Desktop App** — read-only status and refresh. Countdown is configured in the plugin settings section.
+5. **Account menu → Restart Desktop App** — above Settings. Injection depends on the host menu structure; unsupported layouts are skipped with a diagnostic reason code.
+6. **Settings → General → Restart Desktop App** — read-only status and refresh, without a restart action. Countdown is configured in the plugin settings section.
 
-Button entries use a double click within five seconds to submit a normal request; `/restart-desktop` submits once. The host then waits and counts down. A 202 response means accepted, not completed. Repeated normal submissions preserve the first deadline.
+When idle, button entries require two clicks within five seconds to submit a normal waiting request; `/restart-desktop` submits once. With known active work, the first click arms a danger warning; after 900ms a second click forces an immediate restart, skipping waiting and countdown. The warning expires after 15 seconds by default (configurable 5–60). Header confirmation/warning text stays visible at every width; details remain in tooltips and accessible descriptions. A 202 response means accepted, not completed. Repeated normal submissions preserve the first deadline.
 
-**While waiting, counting down or paused**, cancel the request or choose Restart now anyway and confirm once more. Immediate execution skips task waiting and countdown, while installation and identity hard guards remain mandatory. Cancellation after executing returns `cancelled:false` and the UI rereads host state. Expiry explicitly reports that no restart was executed. The compatibility command `/restart-desktop --force` explicitly accepts the risk of immediate execution.
+**While waiting or counting down**, the main button is locked; use Cancel waiting. **The pause question** also offers Restart now anyway with an additional confirmation. Immediate execution skips task waiting and countdown, while installation and identity hard guards remain mandatory. Cancellation after executing returns `cancelled:false` and the UI rereads host state. Expiry explicitly reports that no restart was executed. The compatibility command `/restart-desktop --force` explicitly accepts the risk of immediate execution.
 
 **The UI uses official components**, not lookalikes:
 
 - The sidebar panel row rides the official panel slot (`sidebar.panellist`): the plugin registers only `id / order / label` and an icon component — the **entire row is drawn by the sidebar**, so it cannot look off. Clicking switches the main area to the matching `main` panel, which triggers the restart with an official `Button` (primary).
 - The **main-area panel follows the page layout of its slot-mate** (the task board): it fills the main area's height, paints `--dsw-alias-bg-base`, uses `14px 16px 16px` padding, a 16px/700 title with a status word on the same row, 12px block gaps, and rounds the description, guard warning and result into separate cards. (Reported as a layout bug on 2026-10-20: it used to be a 560px column centred in a full-height area, reading like loose text floating in empty space.)
 - The sidebar-footer entry rides the official `sidebar.footer.action` slot (where the app's own plugin panel lives) and copies the 42px action row of its slot-mates verbatim; it becomes a 36×36 circle when the sidebar collapses to a rail (the slot passes `{ wide }`).
-- The header button copies the real button in that slot (`ui-jops`' `JobListAction`) measure for measure; below 540px window width only the icon remains.
+- The header button copies the real button in that slot (`ui-jops`' `JobListAction`) measure for measure; non-idle state text remains visible at all widths, with a tighter limit below 540px.
 - Settings rows use official buttons and prefer the official refresh icon. A shared store assigns the pause question or immediate confirmation to one mounted action entry. Legacy guard responses still support official `RiskConfirmation`.
-- Color semantics use official tokens: neutral for plain confirmation, `--dsw-alias-state-warn-primary` when work would be interrupted, error red only on failure; the icon spins during handoff (honoring reduced-motion).
+- Color semantics use official tokens: danger red for header confirmation/warning and the panel force warning, secondary warning color while waiting/counting down, and error color for failures; the icon spins during handoff (honoring reduced-motion).
 - Official components are declared in `dsh.client.inject`; should DSH rename or move a package, the plugin falls back to its own **measure-copied** styles instead of crashing.
 
 The full comparison (including the verbatim CSS and official source paths) is in `docs/official-ui-standard.md`.
 
 ## Choosing your entries
 
-The plugin ships a **settings section** with four toggles — changes apply **immediately**, no restart or refresh (the same section also holds the two bundled extras below):
+The plugin ships a **settings section** with five entry toggles — changes apply **immediately**, no restart or refresh (the same section also holds the two bundled extras below):
 
 | Toggle | Turning it off |
 | --- | --- |
 | Sidebar panel entry | the top-of-sidebar row disappears (and its main-area panel) |
 | Sidebar footer entry | the bottom-of-sidebar row disappears — it may crowd other plugins' rows in the same slot; turn this off if they collide |
 | Conversation header button | the header button disappears |
-| Settings → General row | the fallback row in General settings disappears |
+| Settings → General row | the read-only General settings row disappears |
+| Account menu entry | the injected restart item disappears; diagnostics remain available |
 
-All four entries and the slash command are **on by default** (a fresh install shows the entry in all four places); choices are stored in the **local browser** (`localStorage`); **defaults** come from the plugin's config — in `~/.dsh/profiles/<profile>/cordis.patch.yml`, set `config: { panel: false, footer: false, header: false, settingsRow: false, command: false, enabled: false }` on this plugin's row to change them in one place (`command` is the `/restart-desktop` slash command; `enabled` is the master switch).
+All five UI entry switches and the slash command are **on by default** (menu injection still requires a compatible structure); choices are stored in the **local browser** (`localStorage`); **defaults** come from the plugin's config — in `~/.dsh/profiles/<profile>/cordis.patch.yml`, set `config: { panel: false, footer: false, header: false, settingsRow: false, accountMenu: false, command: false, enabled: false }` on this plugin's row to change them in one place (`command` is the `/restart-desktop` slash command; `enabled` is the master switch).
+
+## Authentication Cookie health and recovery confirmation
+
+Settings show the last downtime estimate, the default 16 KiB limit, authentication Cookie count and check timestamp. This is not live monitoring. With no sample the UI says No downtime sample yet. Normal manual launches/exits do not refresh the sample; Recheck only schedules work for the next plugin restart and never opens the database while the app is running.
+
+Cookie backup defaults off; the 80% warning defaults on. Database access is read-only. Optional consistent backups retain three copies; no Cookies are automatically deleted. Legacy authCookieClean values do not enable the new switch. Over-limit samples show instructions to quit DSH, keep a backup and handle Cookies manually. Surviving old-instance processes or unverified identities skip database work without stopping the restart. The plugin does not raise the HTTP header limit.
+
+Recovery requires this restart nonce's host receipt, an authenticated client acknowledgement after a renderer frame, and transport owned by the verified new instance. An inspector listener alone is not success. This confirms host/restart-client connectivity, not every plugin or task. Legacy hosts without receipts remain unconfirmed. The existing downtimeMs is labeled handoff duration, not exact UI downtime.
+
+Submissions and status reads have a ten-second deadline. A missing submission reply is reconciled with host state rather than blindly retried. New hosts reject submissions delayed beyond expiresAt; a status observed after that deadline can safely reconcile the UI. Legacy hosts without that proof stay conservatively locked and suggest a manual quit/reopen. Status preserves the last terminal result until a new request; another reader cannot consume it.
+
+Completed operation records retain the latest twenty eligible records per profile. Pending/unknown records and unread diagnostic references remain protected.
 
 ## Previewing leftover change snapshots
 
@@ -180,7 +196,7 @@ The sender uses built-in Windows PowerShell / WinRT and an available PowerShell 
 
 The scan row exposes Cancel scan via `POST /dsh-desktop-restart/api/prefs?cancelSweep=1`. Production passes shouldStop into recursive traversal; cancellation returns completed partial results with partial=true. An in-flight filesystem IO must finish before the response can settle. Restart requests capture settings and the original deadline on arrival, stop and await the active scan before their state transition, reject execution if unloaded during that wait, and their waiting/executing stages suppress new scans. Production remains preview-only with removed=0.
 
-A cancel response reports terminal once; the next status read clears the reported request. Asynchronous expiry/results are reported once by status before the following read clears them. This removes the request banner without clearing operation diagnoses or unlocking an unknown operation. Missing or non-integer countdown capability disables the editor and asks the user to restart an outdated host.
+Cancellation, expiry and asynchronous execution results remain terminal until the next request replaces them. Status reads do not consume results, so multiple entries see the same outcome. Operation diagnoses and unknown-operation locks remain independent. Missing or non-integer countdown capability disables the editor and asks the user to restart an outdated host.
 
 ## Security model
 
@@ -269,7 +285,7 @@ failure notice dispatched to the user
 npm test
 ```
 
-The base offline smoke suite has 115 checks, four Windows-only. npm test also runs host, client and engine behavior regressions for one-time consumption, cancellation, failed-write rollback, retry, localization, instance isolation and preview safety. Components use React/fetch stubs and the helper uses isolated process/VM stubs. Tests do not connect to the real DSH host, send messages to real sessions, or remove real Temp snapshots. CI runs Ubuntu Node 20/22/24 and Windows Node 24. Exact counts and scope come from test output; source-text checks are not real interface acceptance.
+The base offline smoke suite has 119 checks, four Windows-only. npm test also runs host, client and engine behavior regressions for one-time consumption, cancellation, failed-write rollback, retry, localization, instance isolation and preview safety. Components use React/fetch stubs and the helper uses isolated process/VM stubs. Tests do not connect to the real DSH host, send messages to real sessions, or remove real Temp snapshots. CI runs Ubuntu Node 20/22/24 and Windows Node 24. Exact counts and scope come from test output; source-text checks are not real interface acceptance.
 
 ## Language
 
@@ -298,3 +314,9 @@ Unread diagnoses are never automatically removed. After a new diagnosis or mark-
 The directory index and immutable diagnosis JSON are cached for up to two seconds. Directory metadata changes and local create/read operations invalidate immediately. Delivery metadata is checked on every read, and returned objects cannot mutate the cache. External in-place JSON edits appear after TTL expiry; external file creation/removal invalidates through directory metadata.
 
 Successful legacy migration writes settings-migrated-<profileId>. Existing profile settings without a marker are adopted without overwriting them. Once marked, deleting profile settings uses defaults instead of resurrecting legacy settings. Status settingsMigrated reflects migration/adoption at host activation; settingsMigrationError reports failures and prefs writes return 503. Legacy bytes and mtime remain unchanged. Manually deleting the marker makes migration eligible at the next activation.
+
+Development uses `npm ci --ignore-scripts`, `npm run lint` and `npm test`. ESLint checks undefined names, unused variables and unreachable code; new test helpers also check two-space indentation. Existing source is not reformatted wholesale. Test output separates registered source-text checks, historical reproductions and skipped native SQLite suites from current behavior evidence.
+
+Core restart supports Node >=20. Optional Cookie checks/backups require Node >=22.16.0 (node:sqlite and backup). The Node 20 CI entry explicitly skips the native SQLite suite; maintained Node 22/24 entries run it. Waiting for idle by default is intentional compatibility policy: shouldWaitForIdle is now the internal name, bare force still waits, and only explicit force+now executes immediately. Missing platform authentication makes write routes return 503.
+
+New handoff files store only the executable basename. The full path travels in a helper-only environment variable, is omitted from launch logs and is not inherited by the relaunched app. Valid completed orphan op records without profileId become eligible after seven days; pending, unknown, damaged and unread-linked evidence remains protected.

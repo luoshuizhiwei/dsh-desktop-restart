@@ -1,0 +1,858 @@
+[
+  {
+    "id": "T001",
+    "line": 1092,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T001\", source, /function guardHintOf/u, '必须有组句函数')",
+    "reason": "必须有组句函数；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T002",
+    "line": 1097,
+    "method": "match",
+    "subject": "fn",
+    "assertion": "sourceTextChecks.match(\"T002\", fn, /tasks\\.turns/u, '要用宿主给的结构化计数（turns）')",
+    "reason": "要用宿主给的结构化计数（turns）；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T003",
+    "line": 1098,
+    "method": "match",
+    "subject": "fn",
+    "assertion": "sourceTextChecks.match(\"T003\", fn, /installs\\.running/u, '要用宿主给的结构化计数（installs）')",
+    "reason": "要用宿主给的结构化计数（installs）；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T004",
+    "line": 1099,
+    "method": "match",
+    "subject": "fn",
+    "assertion": "sourceTextChecks.match(\"T004\", fn, /guard\\.reasons.*join/us, '没有计数时退回宿主原句')",
+    "reason": "没有计数时退回宿主原句；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T005",
+    "line": 1108,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T005\", source, /guardSuffix/u, '守卫提示的出路必须按 blocked 分开写')",
+    "reason": "守卫提示的出路必须按 blocked 分开写；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T006",
+    "line": 1109,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T006\", source, /blockedSuffix/u, '硬拦时必须说清「装完之前不能重启」（字典键）')",
+    "reason": "硬拦时必须说清「装完之前不能重启」（字典键）；静态文案或词条契约；不作为交互行为通过证据。"
+  },
+  {
+    "id": "T007",
+    "line": 1151,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T007\", source, /t\\(\"extrasSubtitle\"\\)/u, '两件附带功能应共用同一个分类标题')",
+    "reason": "两件附带功能应共用同一个分类标题；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T008",
+    "line": 1152,
+    "method": "doesNotMatch",
+    "subject": "source",
+    "assertion": "sourceTextChecks.doesNotMatch(\"T008\", source, /sweepSubtitle|tidySubtitle/u, '旧的分开小标题应已移除')",
+    "reason": "旧的分开小标题应已移除；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T009",
+    "line": 1166,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T009\", source, /locale\\.register\\(LOCALE_NS, DICT\\)/u, '必须把字典注册进官方 locale 服务')",
+    "reason": "必须把字典注册进官方 locale 服务；静态文案或词条契约；不作为交互行为通过证据。"
+  },
+  {
+    "id": "T010",
+    "line": 1167,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T010\", source, /locale\\.bind\\(LOCALE_NS\\)/u, '必须用官方 bind 拿翻译函数')",
+    "reason": "必须用官方 bind 拿翻译函数；静态文案或词条契约；不作为交互行为通过证据。"
+  },
+  {
+    "id": "T011",
+    "line": 1168,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T011\", source, /navigator\\.language/u, '兜底要按浏览器语言挑 zh/en')",
+    "reason": "兜底要按浏览器语言挑 zh/en；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T012",
+    "line": 1173,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\r\n    \"T012\", source,\r\n    /inject:\\s*\\[\"slots\",\\s*\"locale\"\\]/u,\r\n    '导出的 inject 数组必须声明 \"locale\"，否则服务根本注入不进来（0.4.0 因此失效）',\r\n  )",
+    "reason": "导出的 inject 数组必须声明 \"locale\"，否则服务根本注入不进来（0.4.0 因此失效）；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T013",
+    "line": 1178,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T013\", source, /ctx\\.locale/u, '必须经 ctx.locale 访问服务（inject 声明的注入方式）')",
+    "reason": "必须经 ctx.locale 访问服务（inject 声明的注入方式）；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T014",
+    "line": 1205,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T014\", source, /typeof document !== \"undefined\"/u, '没有 document 的环境（测试 / SSR）不能炸')",
+    "reason": "没有 document 的环境（测试 / SSR）不能炸；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T015",
+    "line": 1206,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T015\", source, /querySelector\\(\"style\\[data-plugin-css=/u, '重复加载时不能重复插入同一个 style')",
+    "reason": "重复加载时不能重复插入同一个 style；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T016",
+    "line": 1207,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T016\", source, /\\.dshdr-/u, '选择器必须自带前缀，不能影响别的插件')",
+    "reason": "选择器必须自带前缀，不能影响别的插件；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T017",
+    "line": 1225,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\r\n    \"T017\", source,\r\n    /\\.dshdr-trigger:hover:not\\(:disabled\\),\\.dshdr-trigger:focus-visible\\{color:var\\(--dsw-alias-label-secondary/u,\r\n    '官方 hover / focus 只把字色提到 label-secondary，不加任何底色',\r\n  )",
+    "reason": "官方 hover / focus 只把字色提到 label-secondary，不加任何底色；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T018",
+    "line": 1234,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T018\", source, /@keyframes dshdr-spin/u)",
+    "reason": "；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T019",
+    "line": 1235,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T019\", source, /data-busy=1/u)",
+    "reason": "；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T020",
+    "line": 1236,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T020\", source, /prefers-reduced-motion:reduce/u)",
+    "reason": "；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T021",
+    "line": 1241,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T021\", source, /data-phase=warn\\]\\{color:var\\(--dsw-alias-state-warn-primary/u, '会打断工作用官方的 warn 色')",
+    "reason": "会打断工作用官方的 warn 色；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T022",
+    "line": 1242,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T022\", source, /data-phase=error\\]\\{color:var\\(--dsw-alias-state-error-primary/u, '失败才是红色')",
+    "reason": "失败才是红色；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T023",
+    "line": 1243,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T023\", source, /data-phase=confirm\\]\\{color:var\\(--dsw-alias-label-primary/u, '普通确认只做中性强调')",
+    "reason": "普通确认只做中性强调；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T024",
+    "line": 1246,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T024\", source, /:active:not\\(:disabled\\)\\{background:var\\(--dsw-alias-interactive-bg-active/u, '按下态用官方 active token')",
+    "reason": "按下态用官方 active token；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T025",
+    "line": 1247,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T025\", source, /var\\(--dsw-focus-ring-width/u, '焦点环用官方 token')",
+    "reason": "焦点环用官方 token；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T026",
+    "line": 1252,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T026\", source, /\"aria-live\": \"polite\"/u)",
+    "reason": "；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T027",
+    "line": 1253,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T027\", source, /\"aria-label\": ariaLabelOf\\(action\\)/u)",
+    "reason": "；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T028",
+    "line": 1254,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T028\", source, /\"aria-busy\"/u)",
+    "reason": "；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T029",
+    "line": 1271,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T029\", source, /function ariaDescriptionOf/u, '必须有独立的详细提示函数')",
+    "reason": "必须有独立的详细提示函数；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T030",
+    "line": 1272,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T030\", source, /\"aria-describedby\": described === \"\" \\? undefined : hintId/u, '两个常驻按钮都要接 describedby')",
+    "reason": "两个常驻按钮都要接 describedby；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T031",
+    "line": 1273,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T031\", source, /className: \"dshdr-sr-only\"/u, 'describedby 的目标必须是视觉隐藏文本')",
+    "reason": "describedby 的目标必须是视觉隐藏文本；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T032",
+    "line": 1274,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T032\", source, /\\.dshdr-sr-only\\{position:absolute;[^}]*clip:rect/u, 'sr-only 样式必须真的把它藏掉')",
+    "reason": "sr-only 样式必须真的把它藏掉；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T033",
+    "line": 1310,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T033\", source, /\\.dshdr-panel\\{[^}]*height:100%[^}]*\\}/u, '面板要铺满主区高度')",
+    "reason": "面板要铺满主区高度；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T034",
+    "line": 1311,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T034\", source, /\\.dshdr-panel\\{[^}]*background:var\\(--dsw-alias-bg-base/u, '面板要自带 bg-base，别让底色透出')",
+    "reason": "面板要自带 bg-base，别让底色透出；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T035",
+    "line": 1312,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T035\", source, /\\.dshdr-panel\\{[^}]*padding:14px 16px 16px/u, '内边距要与任务看板一致（14/16）')",
+    "reason": "内边距要与任务看板一致（14/16）；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T036",
+    "line": 1313,
+    "method": "doesNotMatch",
+    "subject": "source",
+    "assertion": "sourceTextChecks.doesNotMatch(\"T036\", source, /\\.dshdr-panel\\{[^}]*max-width:560px/u, '不该再用 560px 窄栏')",
+    "reason": "不该再用 560px 窄栏；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T037",
+    "line": 1314,
+    "method": "doesNotMatch",
+    "subject": "source",
+    "assertion": "sourceTextChecks.doesNotMatch(\"T037\", source, /\\.dshdr-panel\\{[^}]*margin:0 auto/u, '窄栏居中会让内容浮在页面中间')",
+    "reason": "窄栏居中会让内容浮在页面中间；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T038",
+    "line": 1315,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T038\", source, /\\.dshdr-panel-title\\{[^}]*font-weight:700/u, '标题字重照原生（700，不是 500）')",
+    "reason": "标题字重照原生（700，不是 500）；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T039",
+    "line": 1317,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T039\", source, /\\.dshdr-panel-header\\{[^}]*align-items:center/u, '标题行要横向排列')",
+    "reason": "标题行要横向排列；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T040",
+    "line": 1318,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T040\", source, /\\.dshdr-panel-status\\{[^}]*margin-left:auto/u, '状态词靠右')",
+    "reason": "状态词靠右；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T041",
+    "line": 1319,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T041\", source, /function statusOf\\(action\\)/u, '要有状态词函数')",
+    "reason": "要有状态词函数；静态文案或词条契约；不作为交互行为通过证据。"
+  },
+  {
+    "id": "T042",
+    "line": 1321,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T042\", source, /\\.dshdr-panel-warn\\{[^}]*border:1px solid[^}]*border-radius:12px/u, '警告块要卡片化')",
+    "reason": "警告块要卡片化；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T043",
+    "line": 1322,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T043\", source, /\\.dshdr-panel-note\\{[^}]*border:1px solid[^}]*border-radius:12px/u, '结果块要卡片化')",
+    "reason": "结果块要卡片化；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T044",
+    "line": 1324,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T044\", source, /const guardWarn = action\\.guardHint === \"\"/u, '守卫提示要单独成一块')",
+    "reason": "守卫提示要单独成一块；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T045",
+    "line": 1330,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T045\", source, /lastRestart: body\\.lastRestart !== null/u, '要读宿主给的回执')",
+    "reason": "要读宿主给的回执；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T046",
+    "line": 1331,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T046\", source, /function restartReceiptText/u, '要有回执文案函数')",
+    "reason": "要有回执文案函数；静态文案或词条契约；不作为交互行为通过证据。"
+  },
+  {
+    "id": "T047",
+    "line": 1332,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T047\", source, /restartReceipt: \"宿主已于 \\{time\\} 恢复（交接 \\{sec\\} 秒）/u, '回执只证明Host恢复，耗时为交接时间')",
+    "reason": "回执只证明Host恢复，耗时为交接时间；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T048",
+    "line": 1333,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T048\", source, /restart,\\s*op,/u, 'useRestart 要 expose restart 与操作状态；额外状态字段不改变这个契约')",
+    "reason": "useRestart 要 expose restart 与操作状态；额外状态字段不改变这个契约；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T049",
+    "line": 1335,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T049\", source, /action\\.restart !== null && React\\.createElement\\(\"p\", \\{ className: \"dshdr-panel-note\" \\}, restartReceiptText/u, '面板要显示回执行')",
+    "reason": "面板要显示回执行；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T050",
+    "line": 1337,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T050\", source, /action\\.restart !== null \\? restartReceiptText\\(action\\.restart\\) : t\\(DEFAULT_HINT_KEY\\)/u, '设置行优先显示回执')",
+    "reason": "设置行优先显示回执；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T051",
+    "line": 1342,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T051\", source, /UI\\.IconRefreshOutlineRegular/u, '官方图标集里有现成的刷新图标，优先用它')",
+    "reason": "官方图标集里有现成的刷新图标，优先用它；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T052",
+    "line": 1343,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T052\", source, /viewBox: \"0 0 16 16\"/u, '兜底图标按官方约定画在 16 格里')",
+    "reason": "兜底图标按官方约定画在 16 格里；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T053",
+    "line": 1344,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T053\", source, /stroke: \"currentColor\"/u, '图标要跟文字颜色走')",
+    "reason": "图标要跟文字颜色走；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T054",
+    "line": 1345,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T054\", source, /fill: \"none\"/u, '描边图标必须 fill:none，否则会填成实心')",
+    "reason": "描边图标必须 fill:none，否则会填成实心；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T055",
+    "line": 1346,
+    "method": "doesNotMatch",
+    "subject": "source",
+    "assertion": "sourceTextChecks.doesNotMatch(\"T055\", source, /\"⟳\"/u, '不该再用字体符号当图标（字体缺字时会出现方框）')",
+    "reason": "不该再用字体符号当图标（字体缺字时会出现方框）；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T056",
+    "line": 1351,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T056\", source, /require\\(\"@deepseek-ai\\/dsh-client-ui-primitives\"\\)/u, '要 require 官方组件库本体')",
+    "reason": "要 require 官方组件库本体；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T057",
+    "line": 1352,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T057\", source, /catch \\{[\\s\\S]{0,40}?UI = null/u, 'require 必须在 try/catch 里：官方改名也不能把插件带崩')",
+    "reason": "require 必须在 try/catch 里：官方改名也不能把插件带崩；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T058",
+    "line": 1353,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T058\", source, /UI\\.Button/u, '设置页按钮用官方 Button')",
+    "reason": "设置页按钮用官方 Button；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T059",
+    "line": 1354,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T059\", source, /UI\\.RiskConfirmation/u, '风险确认用官方 RiskConfirmation')",
+    "reason": "风险确认用官方 RiskConfirmation；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T060",
+    "line": 1355,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T060\", source, /variant: \"ghost\"/u, '官方 Button 的变体')",
+    "reason": "官方 Button 的变体；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T061",
+    "line": 1356,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T061\", source, /acknowledged: action\\.modal\\.acknowledged/u, 'RiskConfirmation 是受控的：勾选状态由调用方持有')",
+    "reason": "RiskConfirmation 是受控的：勾选状态由调用方持有；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T062",
+    "line": 1357,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T062\", source, /onAcknowledgedChange/u, '勾选回调用官方约定的名字')",
+    "reason": "勾选回调用官方约定的名字；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T063",
+    "line": 1358,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T063\", source, /data-variant\": \"ghost\"/u, '兜底按钮也照抄官方 ghost 变体')",
+    "reason": "兜底按钮也照抄官方 ghost 变体；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T064",
+    "line": 1455,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T064\", source, /function PanelGlyph/u, '这个座位只提供图标组件')",
+    "reason": "这个座位只提供图标组件；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T065",
+    "line": 1456,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T065\", source, /variant: \"primary\"/u, '面板里的按钮用官方 Button 的 primary 变体')",
+    "reason": "面板里的按钮用官方 Button 的 primary 变体；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T066",
+    "line": 1511,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T066\", source, /function SweepRow/u, '设置页要有这一行')",
+    "reason": "设置页要有这一行；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T067",
+    "line": 1512,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T067\", source, /SWEEP_ROUTE/u, '必须打宿主路由，不能只在本地记一下')",
+    "reason": "必须打宿主路由，不能只在本地记一下；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T068",
+    "line": 1513,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T068\", source, /\\?enabled=1/u, '打开开关要通知宿主')",
+    "reason": "打开开关要通知宿主；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T069",
+    "line": 1514,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T069\", source, /\\?enabled=0/u, '关掉开关也要通知宿主')",
+    "reason": "关掉开关也要通知宿主；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T070",
+    "line": 1515,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T070\", source, /\\?run=1/u, '「立即清理」要能单独触发一次')",
+    "reason": "「立即清理」要能单独触发一次；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T071",
+    "line": 1516,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T071\", source, /sweep: body\\.sweep/u, '开关状态必须来自宿主的状态接口（不许客户端自己编默认值）')",
+    "reason": "开关状态必须来自宿主的状态接口（不许客户端自己编默认值）；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T072",
+    "line": 1517,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T072\", source, /当前版本只扫描并预览候选项，不会删除/u, '界面明确当前只预览')",
+    "reason": "界面明确当前只预览；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T073",
+    "line": 1556,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\r\n    \"T073\", source,\r\n    /\\.dshdr-foot-badge:hover:not\\(:disabled\\)\\{background:var\\(--dsw-alias-interactive-bg-hover/u,\r\n    '官方 hover 是加 interactive-bg-hover 底色',\r\n  )",
+    "reason": "官方 hover 是加 interactive-bg-hover 底色；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T074",
+    "line": 1561,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\r\n    \"T074\", source,\r\n    /\\.dshdr-foot\\[data-rail=1\\]\\{width:36px;height:36px;margin:8px 0 10px\\}/u,\r\n    '收起成 rail 时官方是 36×36、margin 8px 0 10px',\r\n  )",
+    "reason": "收起成 rail 时官方是 36×36、margin 8px 0 10px；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T075",
+    "line": 1566,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\r\n    \"T075\", source,\r\n    /\\.dshdr-foot\\[data-rail=1\\] \\.dshdr-foot-badge\\{border-radius:50%;justify-content:center;gap:0;width:36px;height:36px;padding:0\\}/u,\r\n    '收起成 rail 时官方是圆形',\r\n  )",
+    "reason": "收起成 rail 时官方是圆形；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T076",
+    "line": 1573,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\r\n    \"T076\", source,\r\n    /\\[class\\*=\\\\\"footerActions\\\\\"\\]:has\\(\\.dshdr-foot\\)\\{flex-wrap:wrap !important\\}/u,\r\n    '同座位多个整行条目时，容器必须允许换行，且只命中装着本插件这一行的容器',\r\n  )",
+    "reason": "同座位多个整行条目时，容器必须允许换行，且只命中装着本插件这一行的容器；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T077",
+    "line": 1584,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T077\", source, /刚刚扫描/u, '手动扫描后必须写一句回执')",
+    "reason": "手动扫描后必须写一句回执；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T078",
+    "line": 1585,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T078\", source, /const clockOf/u, '回执要带时间戳，让「又跑了一次」看得见')",
+    "reason": "回执要带时间戳，让「又跑了一次」看得见；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T079",
+    "line": 1586,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T079\", source, /describe\\(last\\)/u, '提示文字统一走 describe（含时间戳）')",
+    "reason": "提示文字统一走 describe（含时间戳）；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T080",
+    "line": 1587,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T080\", source, /call\\(\"\\?run=1\", true\\)/u, '「立即清理」要标成手动触发')",
+    "reason": "「立即清理」要标成手动触发；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T081",
+    "line": 1588,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T081\", source, /const toggle = /u, '开关的拨动处理要单独一处，别把形状假设写死在 JSX 里')",
+    "reason": "开关的拨动处理要单独一处，别把形状假设写死在 JSX 里；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T082",
+    "line": 1595,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T082\", source, /className: \"dshdr-set-result\"/u, '结果必须有自己的那一行，不再借 hint 的位置')",
+    "reason": "结果必须有自己的那一行，不再借 hint 的位置；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T083",
+    "line": 1596,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\r\n    \"T083\", source,\r\n    /\\.dshdr-set-result\\[data-tone=ok\\]\\{color:var\\(--dsw-alias-state-success-primary/u,\r\n    '成功用官方成功色',\r\n  )",
+    "reason": "成功用官方成功色；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T084",
+    "line": 1601,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\r\n    \"T084\", source,\r\n    /\\.dshdr-set-result\\[data-tone=warn\\]\\{color:var\\(--dsw-alias-state-warn-primary/u,\r\n    '有目录没删掉是警告色，不能谎报成功',\r\n  )",
+    "reason": "有目录没删掉是警告色，不能谎报成功；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T085",
+    "line": 1606,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\r\n    \"T085\", source,\r\n    /\\.dshdr-set-result\\[data-tone=error\\]\\{color:var\\(--dsw-alias-state-error-primary/u,\r\n    '失败用官方错误色',\r\n  )",
+    "reason": "失败用官方错误色；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T086",
+    "line": 1611,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T086\", source, /const toneOf = /u, '颜色要有唯一一处判定，别散落在各处')",
+    "reason": "颜色要有唯一一处判定，别散落在各处；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T087",
+    "line": 1612,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\r\n    \"T087\", source,\r\n    /\\.dshdr-spin\\{display:inline-flex;transform-origin:center;animation:dshdr-spin/u,\r\n    '忙碌时图标要转起来（官方 Button 不接受 data-busy，所以用可复用的类）',\r\n  )",
+    "reason": "忙碌时图标要转起来（官方 Button 不接受 data-busy，所以用可复用的类）；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T088",
+    "line": 1617,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\r\n    \"T088\", source,\r\n    /prefers-reduced-motion:reduce\\)\\{[^}]*\\.dshdr-spin\\{animation:none\\}/u,\r\n    '系统开了「减少动效」时必须停转',\r\n  )",
+    "reason": "系统开了「减少动效」时必须停转；静态样式或图形契约；文本检查不能证明浏览器布局。"
+  },
+  {
+    "id": "T089",
+    "line": 1708,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T089\", source, /const CONTACT_LABELS = \\[\"意见反馈\", \"Feedback\"\\]/u, '认人只用这两种文字')",
+    "reason": "认人只用这两种文字；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T090",
+    "line": 1709,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T090\", source, /button\\[role=\\\\\"menuitem\\\\\"\\]/u, '内置账号菜单给的就是这个形状，没有 id / data 可认')",
+    "reason": "内置账号菜单给的就是这个形状，没有 id / data 可认；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T091",
+    "line": 1710,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T091\", source, /new MutationObserver/u, '菜单是点开才挂 DOM 的，不能只在启动时扫一次')",
+    "reason": "菜单是点开才挂 DOM 的，不能只在启动时扫一次；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T092",
+    "line": 1711,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T092\", source, /node\\.removeAttribute\\(HIDER_ATTR\\)/u, '关掉开关要把标记摘掉')",
+    "reason": "关掉开关要把标记摘掉；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T093",
+    "line": 1712,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T093\", source, /node\\.style\\.display = \"\"/u, '关掉开关要把被藏的元素放开')",
+    "reason": "关掉开关要把被藏的元素放开；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T094",
+    "line": 1713,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T094\", source, /HIDE_CONTACT_STORE_KEY/u, '开关存本机即可（这是纯客户端行为）')",
+    "reason": "开关存本机即可（这是纯客户端行为）；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T095",
+    "line": 1714,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T095\", source, /raw === \"1\"/u, '没存过时默认不藏（新用户原样）')",
+    "reason": "静态兼容契约：仅字面值 1 开启隐藏；脏值运行行为另外由客户端六组存储用例验证。"
+  },
+  {
+    "id": "T096",
+    "line": 1715,
+    "method": "match",
+    "subject": "source",
+    "assertion": "sourceTextChecks.match(\"T096\", source, /CONTACT_LABELS\\.indexOf\\(text\\) < 0/u, '认不出就跳过，绝不误伤别的菜单项')",
+    "reason": "认不出就跳过，绝不误伤别的菜单项；静态集成/结构兼容检查，保留原约束防止遗漏；不作为行为证据，当前运行行为由客户端/宿主回归另行验证。"
+  },
+  {
+    "id": "T097",
+    "line": 546,
+    "method": "ok",
+    "subject": "derived source structure",
+    "assertion": "sourceTextChecks.ok(\"T097\", blockedAt > 0, '必须有「插件正在安装/更新」的硬拦分支')",
+    "reason": "必须有「插件正在安装/更新」的硬拦分支；保留为静态结构/常量兼容约束，不计为执行行为证据。"
+  },
+  {
+    "id": "T098",
+    "line": 548,
+    "method": "ok",
+    "subject": "derived source structure",
+    "assertion": "sourceTextChecks.ok(\"T098\", blockedAt < forceAt, '硬拦必须排在 force 守卫之前，否则 ?force=1 会绕过它')",
+    "reason": "硬拦必须排在 force 守卫之前，否则 ?force=1 会绕过它；保留为静态结构/常量兼容约束，不计为执行行为证据。"
+  },
+  {
+    "id": "T099",
+    "line": 1095,
+    "method": "ok",
+    "subject": "derived source structure",
+    "assertion": "sourceTextChecks.ok(\"T099\", fn.length > 300, `guardHintOf 函数体要完整截取到（现在 ${String(fn.length)} 字符）`)",
+    "reason": "source structure check；保留为静态结构/常量兼容约束，不计为执行行为证据。"
+  },
+  {
+    "id": "T100",
+    "line": 1106,
+    "method": "ok",
+    "subject": "derived source structure",
+    "assertion": "sourceTextChecks.ok(\"T100\", blockedAt > 0, '必须识别宿主半的硬拦响应')",
+    "reason": "必须识别宿主半的硬拦响应；保留为静态结构/常量兼容约束，不计为执行行为证据。"
+  },
+  {
+    "id": "T101",
+    "line": 1107,
+    "method": "ok",
+    "subject": "derived source structure",
+    "assertion": "sourceTextChecks.ok(\"T101\", blockedAt < guardAt, '硬拦要排在守卫确认之前，否则会弹一个勾选了也没用的确认框')",
+    "reason": "硬拦要排在守卫确认之前，否则会弹一个勾选了也没用的确认框；保留为静态结构/常量兼容约束，不计为执行行为证据。"
+  },
+  {
+    "id": "T102",
+    "line": 1153,
+    "method": "ok",
+    "subject": "derived source structure",
+    "assertion": "sourceTextChecks.ok(\r\n    \"T102\", /extrasSubtitle: \"附带功能\",/u.test(source),\r\n    '中文标题应就是「附带功能」四个字（不带括号说明）',\r\n  )",
+    "reason": "中文标题应就是「附带功能」四个字（不带括号说明）；保留为静态结构/常量兼容约束，不计为执行行为证据。"
+  },
+  {
+    "id": "T103",
+    "line": 1157,
+    "method": "ok",
+    "subject": "derived source structure",
+    "assertion": "sourceTextChecks.ok(\r\n    \"T103\", /extrasSubtitle: \"Bundled extras\",/u.test(source),\r\n    '英文标题不带 \"unrelated to restarting\" 括号说明',\r\n  )",
+    "reason": "英文标题不带 \"unrelated to restarting\" 括号说明；保留为静态结构/常量兼容约束，不计为执行行为证据。"
+  },
+  {
+    "id": "T104",
+    "line": 1223,
+    "method": "ok",
+    "subject": "derived source structure",
+    "assertion": "sourceTextChecks.ok(\"T104\", source.includes(token), `缺少与官方标题栏动作一致的 ${token}`)",
+    "reason": "source structure check；保留为静态结构/常量兼容约束，不计为执行行为证据。"
+  },
+  {
+    "id": "T105",
+    "line": 1244,
+    "method": "ok",
+    "subject": "derived source structure",
+    "assertion": "sourceTextChecks.ok(\"T105\", !source.includes('--dsw-alias-state-warning-primary'), '官方没有 state-warning-primary 这个 token')",
+    "reason": "官方没有 state-warning-primary 这个 token；保留为静态结构/常量兼容约束，不计为执行行为证据。"
+  },
+  {
+    "id": "T106",
+    "line": 1245,
+    "method": "ok",
+    "subject": "derived source structure",
+    "assertion": "sourceTextChecks.ok(\"T106\", !source.includes('--dsw-alias-interactive-bg-hover-warning'), '这个 token 也不存在，别自造')",
+    "reason": "这个 token 也不存在，别自造；保留为静态结构/常量兼容约束，不计为执行行为证据。"
+  },
+  {
+    "id": "T107",
+    "line": 1554,
+    "method": "ok",
+    "subject": "derived source structure",
+    "assertion": "sourceTextChecks.ok(\"T107\", source.includes(token), `缺少与同座位占用者一致的 ${token}`)",
+    "reason": "source structure check；保留为静态结构/常量兼容约束，不计为执行行为证据。"
+  }
+]
