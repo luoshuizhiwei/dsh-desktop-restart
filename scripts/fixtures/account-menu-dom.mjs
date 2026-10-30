@@ -72,6 +72,9 @@ export function accountMenuDOM(scenario = 'normal') {
   body.appendChild(trigger)
   const menu = new Node('div')
   menu.setAttribute('role', 'menu'); menu.setAttribute('data-menu-material', 'translucent')
+  // 2026-10-30: 宿主菜单的真实伴随节点（j1 渲染的 data-menu-backing），常驻 body。
+  const backing = new Node('div')
+  backing.setAttribute('data-menu-backing', ''); backing.setAttribute('aria-hidden', 'true')
   // Observed in Electron 2026-10-29: material precedes the presentation viewport.
   const material = new Node('div')
   material.className = '_material_ri079_21'; material.setAttribute('aria-hidden','true')
@@ -122,7 +125,7 @@ export function accountMenuDOM(scenario = 'normal') {
   function notify(records = []) { for (const observer of [...observers]) observer.callback(records) }
   function clickTrigger() { for (const fn of docListeners.get('click') ?? []) fn({target:trigger}) }
   return {
-    document, MutationObserver, menu, material, viewport, itemWrap, footer, separator, seed, trigger,
+    document, MutationObserver, menu, material, viewport, itemWrap, footer, separator, seed, trigger, backing,
     clickTrigger, notify, insertEvents,
     dispatchKey(event) { for(const fn of docListeners.get('keydown') ?? []) fn(event) },
     prependHostItem({beforeInjected=false, deliver=true} = {}) {
@@ -146,12 +149,29 @@ export function accountMenuDOM(scenario = 'normal') {
     clickItem() { const button = menu.querySelector('[data-dshdr-account-inject]'); for (const fn of button.listeners.get('click') ?? []) fn({stopPropagation(){}}) },
     open() {
       trigger.setAttribute('aria-expanded', 'true')
+      // 2026-10-30 first-open fix 复现：真实宿主在菜单列表之前先向 body 提交
+      // data-menu-backing 节点（j1 的 portal + useLayoutEffect 搬移）。旧实现
+      // 的发现观察器一次性守卫在这种顺序下首开必失败。
+      if (scenario === 'backing-first' && !backing.isConnected) body.appendChild(backing)
       if (scenario !== 'missing' && !menu.isConnected) {
         if (scenario === 'nested') { const wrapper = new Node('div'); body.appendChild(wrapper); wrapper.appendChild(menu) }
         else body.appendChild(menu)
         if (scenario === 'ambiguous') { const other = new Node('div'); other.setAttribute('role','menu'); other.setAttribute('data-menu-material','translucent'); body.appendChild(other) }
       }
       clickTrigger()
+    },
+    // 模拟宿主两次提交。staged=true：backing 与菜单分两个微任务批次投递
+    //（真实 React 分批提交形态 —— 一致性投递合并的盲区由 G5 单独覆盖）；
+    // 默认同批合并（既有用例兼容）。
+    async openStaged({ staged = false } = {}) {
+      // 真实顺序：用户先点击（触发 armDiscovery），React 随后分批提交。
+      trigger.setAttribute('aria-expanded', 'true')
+      clickTrigger()
+      if (scenario !== 'missing' && !menu.isConnected) {
+        if (!backing.isConnected) body.appendChild(backing)   // 变更#1: backing
+        if (staged) { await Promise.resolve(); await new Promise(r => setImmediate(r)) }
+        body.appendChild(menu)                                 // 变更#2: 菜单
+      }
     },
     close() { trigger.setAttribute('aria-expanded', 'false'); menu.remove(); notify() },
     injected: () => menu.querySelectorAll('[data-dshdr-account-inject]'),

@@ -2811,5 +2811,101 @@ if (!process.env.DSHDR_MENU_CASE || process.env.DSHDR_MENU_CASE === 'F7') {
   passed++;console.log(`ok ${passed} - F7 reopen idempotence and cleanup preserved`)
 }
 
+
+// ── 2026-10-30 修复：账号菜单重启项首开不出现（需开两次） ────────────────────
+// 根因（隔离复现 + asar 逆向证实）：宿主把 data-menu-backing 节点先于菜单列表
+// 提交进 body；旧发现观察器的 armed 一次性守卫在 backing 变更时就触发并
+// disconnect，菜单真正出现时无人接住 → 首开无按钮。第二次打开时 backing
+// 已常驻（无变更），第一次变更恰好是菜单 → 成功。修复：每次 body childList
+// 变更都幂等重试 probe，菜单就位才注入并停止。
+// G 系列：DSHDR_FIRSTOPEN_CASE 可单跑。
+
+// G1：宿主真实顺序（backing 先、菜单后，两个微任务批次）—— 第一次打开即有按钮。
+if (!process.env.DSHDR_FIRSTOPEN_CASE || process.env.DSHDR_FIRSTOPEN_CASE === 'G1') {
+  const dom = accountMenuDOM('backing-first')
+  const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
+  await flush()
+  await dom.openStaged({ staged: true })
+  await flush()
+  assert.equal(dom.injected().length, 1, 'G1: 首次打开（backing 先于菜单提交）即完成注入')
+  const button = dom.injected()[0]
+  assert.equal(dom.viewport.firstElementChild, button, 'G1: 按钮仍在 viewport 最前')
+  assert.equal(button.parentElement, dom.viewport, 'G1: parentElement === viewport')
+  // 注入发生在菜单 append 的同一微任务批次（绘制前）—— 无 setTimeout/rAF 依赖。
+  assert.ok(!h.timerDelays().includes(0), 'G1: 无 setTimeout(0) 依赖')
+  h.dispose()
+  passed++;console.log(`ok ${passed} - G1 backing-first order injects on the FIRST open`)
+}
+
+// G2：完整两轮 —— 关闭（只移除菜单、backing 常驻）后第二次打开仍成功且幂等。
+if (!process.env.DSHDR_FIRSTOPEN_CASE || process.env.DSHDR_FIRSTOPEN_CASE === 'G2') {
+  const dom = accountMenuDOM('backing-first')
+  const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
+  await flush()
+  await dom.openStaged({ staged: true }); await flush()
+  assert.equal(dom.injected().length, 1, 'G2: 首开注入')
+  dom.close(); await flush()
+  assert.equal(dom.injected().length, 0, 'G2: 关闭清理')
+  // 第二次：backing 已在 body（openStaged 不重复挂），第一次变更就是菜单。
+  await dom.openStaged({ staged: true }); await flush()
+  assert.equal(dom.injected().length, 1, 'G2: 二开注入（无重复）')
+  assert.equal(dom.injected().length, 1, 'G2: 幂等 —— 恰一个按钮')
+  h.dispose()
+  assert.equal(dom.injected().length, 0, 'G2: 卸载清理')
+  passed++;console.log(`ok ${passed} - G2 close/reopen stays idempotent with a persistent backing`)
+}
+
+// G3：无抖动保持 —— 注入仍在菜单 append 的微任务批次内完成（首帧即最终布局）。
+if (!process.env.DSHDR_FIRSTOPEN_CASE || process.env.DSHDR_FIRSTOPEN_CASE === 'G3') {
+  const dom = accountMenuDOM('backing-first')
+  const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
+  await flush()
+  // 菜单 append 的同一个微任务批次里注入 —— backing 变更批次不注入。
+  dom.openStaged()
+  // openStaged 同步完成两次 append；两个 scheduleNotify 合并成一次微任务投递
+  //（notifyScheduled 守卫）—— 真实浏览器中两次 append 若在同一宏任务同样
+  // 合并为一次 MO 投递。注入仍发生在「菜单已在 DOM」的首个微任务 → 绘制前。
+  await flush()
+  assert.equal(dom.injected().length, 1, 'G3: 菜单出现的首个微任务批次内注入（绘制前）')
+  assert.ok(h.frameCount() <= 1, 'G3: 至多一个 visibility 兜底帧（注入不依赖 rAF）')
+  h.dispose()
+  passed++;console.log(`ok ${passed} - G3 pre-paint injection preserved (no flicker regression)`)
+}
+
+// G4：观察器生命周期不变 —— 注入成功后无 500ms 超时残留；菜单关闭归零；不常驻。
+if (!process.env.DSHDR_FIRSTOPEN_CASE || process.env.DSHDR_FIRSTOPEN_CASE === 'G4') {
+  const dom = accountMenuDOM('backing-first')
+  const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
+  await flush()
+  dom.openStaged(); await flush()
+  assert.equal(dom.injected().length, 1)
+  assert.ok(!h.timerDelays().includes(500), 'G4: 成功后超时定时器已清')
+  const bodyObservers = dom.observations().filter(item => item.target === dom.document.body && item.options.childList && !item.options.subtree)
+  assert.ok(bodyObservers.length <= 1, 'G4: body childList 目标至多 1（稳定观察器）')
+  dom.close(); await flush()
+  assert.equal(dom.observations().length, 0, 'G4: 菜单关闭后观察器归零')
+  h.dispose()
+  assert.equal(dom.listenerCount(), 0, 'G4: 卸载后无监听残留')
+  passed++;console.log(`ok ${passed} - G4 discovery lifecycle unchanged (bounded, no residue)`)
+}
+
+// G5：菜单后到（先点击、菜单延后出现）—— 发现窗口内接住，仍注入。
+if (!process.env.DSHDR_FIRSTOPEN_CASE || process.env.DSHDR_FIRSTOPEN_CASE === 'G5') {
+  const dom = accountMenuDOM('backing-first')
+  const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
+  await flush()
+  dom.clickTrigger()
+  dom.trigger.setAttribute('aria-expanded', 'true')
+  // 真实宿主时序：backing 变更先投递，菜单稍后（同一窗口内）。
+  dom.document.body.appendChild(dom.backing)
+  await flush()
+  assert.equal(dom.injected().length, 0, 'G5: backing 批次不注入')
+  dom.document.body.appendChild(dom.menu)
+  await flush()
+  assert.equal(dom.injected().length, 1, 'G5: 菜单出现的批次注入（窗口内接住）')
+  h.dispose()
+  passed++;console.log(`ok ${passed} - G5 late menu arrival caught within the window`)
+}
+
 console.log(`all ${passed} client regression checks passed`)
 
