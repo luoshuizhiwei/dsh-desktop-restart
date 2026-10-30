@@ -1,7 +1,7 @@
 {
   "name": "@luoshuizhiwei/dsh-desktop-restart",
   "version": "0.4.5",
-  "description": "DeepSeek Harness desktop restart plugin with guarded restart, one-time receipts, snapshot candidate previews and optional Feedback hiding. UI follows the app language (zh/en). 桌面版重启插件：受保护的重启、一次性回执、快照候选预览及可选隐藏反馈；界面跟随主应用语言（中/英）。 Optional Cookie health/backup requires Node.js >=22.16.0; core restart supports Node.js >=20.",
+  "description": "Adds a restart button to the DeepSeek Harness desktop app. If work is still running it asks before restarting, and afterwards it tells you how long the app was down. Optional extras: check the size of saved sign-in data, preview leftover temp files, hide the feedback item in the account menu. UI follows the app language (zh/en). 给 DeepSeek Harness 桌面版加一个重启按钮：有任务在跑时会先问过你，重启后告诉你停机了多久。另有可选功能：检查登录数据占用、预览遗留临时文件、隐藏账号菜单里的意见反馈。界面跟随应用语言（中/英）。",
   "keywords": [
     "dsh",
     "dsh-plugin",

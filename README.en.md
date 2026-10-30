@@ -1,89 +1,100 @@
-# dsh-desktop-restart
+# Restart Desktop App (dsh-desktop-restart)
 
-This worktree passed the full npm test suite after batch-one safety fixes on 2026-10-29. The new cross-process lock and read-only Cookie backup have not been accepted through a real DSH restart. Earlier desktop restarts establish only the source tested then. The package remains 0.4.5 and differs from the published release.
+Adds a **Restart** button to the **DeepSeek Harness desktop app** — no more quitting and reopening by hand.
 
 English | **[简体中文](README.md)**
 
-A restart plugin for the **DeepSeek Harness desktop app (Electron)**. It adds a **"Restart Desktop App"** entry at the **top of the left sidebar** (mounted on the official panel slot for third-party plugins — the row itself is drawn by the sidebar, so it looks exactly native), another entry at the **bottom of the sidebar**, a button in the conversation header, a `/restart-desktop` slash command, and a row under Settings → General. Which entries exist is up to you — toggle them in the plugin's own settings section.
+---
 
-**Waits for verified idle by default**: generation, tools, jobs, queued messages or unknown task state keep the request waiting. Idle starts the captured countdown (0–60 seconds, default 0). New work observed during countdown pauses with one question; no answer means no execution. All pre-execution stages share the original 30-minute deadline.
+## What problem it solves
 
+The desktop app has no restart entry. To restart it you have to either:
 
-Besides restarting, it also ships two small extras (grouped under one **"Bundled extras"** section in the settings, both optional): previewing leftover change-snapshot candidates in the system Temp folder (currently without deletion), and hiding the easy-to-misclick "Feedback" item that sits right below "Settings" in the account menu. Neither is functionally related to restarting — they just ride along with this plugin.
+- close the window and open it again (easy to leave background processes behind), or
+- kill the process in Task Manager (risky)
 
-## Why it exists
+This plugin turns "restart" into a button in places you already look. More importantly, **it checks whether you are busy first** — while work is running it will not restart straight away, it asks you.
 
-Version 0.4.5 is the current release. HTTP 202 means scheduling was accepted; the UI continues reading the host's actual progress and result. A failed status read preserves the last confirmed operation and offers a retry. If the helper's identity or execution outcome cannot be established, another restart remains blocked; manually quit and reopen the desktop app when required instead of clearing records to bypass the lock.
+The first launch after installing needs one manual restart (the plugin is not running yet). After that you never touch it again.
 
-Snapshot permission errors and incomplete scans are reported separately, and candidate sizes are estimates. The real-DSH restart chain, host/client recovery receipts and handoff duration were verified locally; the duration is not exact UI downtime. Screen-reader acceptance has not been performed, and offline tests do not establish it.
+---
 
-The desktop app's process model is nothing like `dsh web` in a terminal:
+## Usage
 
-```
-DeepSeek Harness.exe            ← Electron main: window, tray, auto-update
-  └── DeepSeek Harness.exe      ← host child (same exe + ELECTRON_RUN_AS_NODE=1)
-        └── this plugin         runs dsh-desktop-host, listening on 127.0.0.1
-```
+Restart appears in these places, **all enabled by default**:
 
-Two consequences:
+| Where | How it works |
+| --- | --- |
+| Top of the left sidebar | Opens the restart panel in the main area; click Restart there |
+| Bottom of the left sidebar | Click twice to restart |
+| Conversation header | The Restart button on the right of the session title bar |
+| Account menu | Open the avatar menu at the bottom left — it is the top item |
+| Slash command | Type `/restart-desktop` and press Enter |
+| Settings → General | Read-only status row; does not restart |
 
-1. **The host exiting ≠ the app restarting.** The main process treats a child exit as a failure and shows a recovery dialog (default button: "Restart app") — workable, but it needs a human click every time.
-2. **No restart channel exists for plugins.** The full IPC surface is `shutdown` / `quit-inspection` / `update-tasks` (main → host) and `ready` / `fatal` / `shutdown-complete` / `platform-session` (host → main); the renderer-side `DESKTOP_IPC` table has no restart either. The built-in "Restart app and host" menu item only exists in development builds, and on Windows the app menu bar holds only devTools while the tray menu has "Open" and "Quit".
+Turn off any entry you do not want under **Settings → Restart Desktop App**. Changes apply immediately — no app restart needed.
 
-So a one-click restart can only be done by a process **outside the host**.
+---
 
-## How it works
+## How it protects you
 
-1. An entry POSTs to this plugin's own host route (same-origin).
-2. The host checks the installation hard guard, then owns waiting, countdown, pause and execution. Immediate execution still passes installation and identity guards.
-3. Once checks pass it writes a handoff description, then spawns a **detached helper** via `process.execPath` (the desktop app itself) with `ELECTRON_RUN_AS_NODE=1`, and immediately replies 202. The helper therefore needs neither a system Node nor `dsh` on PATH.
-4. The helper waits 1.5 s for the response to reach the browser, then — while the main process is still alive — asks once for its command line and executable path (the restart should carry the original arguments; the fallback kill also identifies targets by path).
-5. The helper ends the **Electron main process** — deliberately **without `/T`**: the host child must survive so it can shut down gracefully after the IPC drop (`application.shutdown`) and flush its session logs. Using `/T` would hard-kill the host too — that is what actually loses data.
-6. The helper waits for the main process to disappear, then for the listening port to be released (probed by *connecting*, not *binding* — a probe bind would occupy the very port the replacement needs).
-7. If the port remains held, only processes proved to belong to this instance by ancestry, executable path and creation identity may be ended. The helper never broadens to image-name matching or treats an identical executable path as proof of instance ownership. Unverifiable identity stops the operation with a diagnostic. A stuck host is considered separately and rechecked before a last-resort termination, with an explicit warning about incomplete session logs.
-8. The helper relaunches a fresh instance with a clean environment — `ELECTRON_RUN_AS_NODE` must be stripped, or the new "app" would boot in Node mode as a windowless process. If the new instance dies immediately it retries (default 3 times); only after all attempts fail does it give up and pop a dialog asking the user to open the app manually — otherwise the window would simply never come back while the log says "relaunched".
-9. The handoff directory keeps only the latest 20 handoff/log pairs; older ones are pruned.
+When work is running (generating, running tools, queued messages, background jobs), one click does **not** restart:
 
-## Guards
+1. First click: the button turns red, the label becomes "Restart anyway?", and it tells you what would be interrupted
+2. Second click: the restart actually happens
+3. Or choose "Restart when idle": it waits and restarts once the work finishes
 
-"Can restart" is not "should restart". The app's own quit flow first asks the host what would be interrupted (`hasDesktopActiveTasks`: agents generating or running tools, queued messages, background jobs running or stopping) and prompts the user; this plugin ends the main process directly, bypassing that check. Two equivalent guards make up for it:
+The red warning **expires after 15 seconds** so a stray click later cannot restart the app (configurable 5–60 seconds).
 
-| Guard | Criterion | What it covers | Outcome |
-| --- | --- | --- | --- |
-| Tasks running or unknown | `agents` + `jobs` services | this instance’s generation, tools, queues and jobs | wait normally; new work during countdown pauses; an additional confirmation permits immediate execution |
-| Plugin install/update in progress | the process recorded in `<profile>/.plugin-manager/run.json` is **still alive** | the built-in plugin manager, the plugin market, any `dsh plugin` operation | **hard block**: `?force=1` is refused too; wait for it to finish |
+"Restart when idle" waits at most **30 minutes**; on timeout it states clearly that no restart was performed.
 
-**The host detects task changes**: waiting samples every five seconds; countdown samples at most every second. New work creates one stable question with Continue waiting / Restart now / Cancel. Continue starts a full countdown on the next idle observation without extending the original deadline. Restart now requires one additional confirmation. An unanswered question stays paused until cancellation or expiry.
+**While a plugin is being installed or updated, restart is hard-blocked** — killing the process then would corrupt the dependency tree. Wait for it to finish (usually a minute or two).
 
-**An install/update in progress hard-blocks** (2026-10-12): pnpm is writing the profile's `node_modules`; ending the host mid-write leaves the dependency tree half-old-half-new — the new instance may fail to load a plugin, and `package.json` / lockfile may sit in a "edited but not installed" state. That is not a "the user knows, let them" risk, so no `force` path is offered.
+---
 
-The criterion is **whether the process is alive**, not whether the record file exists: `run.json` lingers after a hard kill (the app itself waits 5 s then deletes it), and blocking on file existence would deadlock the restart button — exactly the 2026-10-06 bug. The liveness test **mirrors the app's own** (`treeAlive` from `@deepseek-ai/dsh-plugin-manager`: `process.kill(pid, 0)` not throwing = alive):
+## After a restart
 
-- process alive → hard block (just wait, usually a minute or two; the next click after it ends goes through);
-- process gone → treat as crash leftover, **don't block** (the recorded pid is still reported for diagnosis);
-- no readable pid (truncated file, changed format) → can't tell, **warn only**, `force` allowed — better to ask twice than to guess.
+It reports **how long the app was down** and whether the new instance came up.
 
-## After a restart: receipt
+To be precise: that receipt proves the new app loaded this plugin. It does not mean all your plugins and background tasks have recovered. **Interrupted work is yours to resume** — this plugin will not restore conversations or tasks, and it does not send messages to sessions.
 
-Version 0.4.5 binds a receipt to the current profile, installation instance and a unique restart identifier. The helper passes that identifier only to the replacement application. Its new host claims and consumes the receipt once within a short validity window. A failed scheduling attempt invalidates its marker.
+---
 
-The receipt separates the request time from **Host recovery time**. It proves that the new host loaded the plugin; it does not certify that every window, plugin or background task is ready.
+## Bundled extras (each can be turned off)
 
-The plugin does not send messages to sessions or automatically restart model turns or background jobs. Results appear only in the plugin UI; users continue interrupted work themselves. There are no session-resume modes or related settings/API parameters.
+These three are unrelated to restarting; they ship along with this plugin.
 
-The replacement process strips old Node-mode, session, URL, shell and restart identifiers while preserving DSH_HOME / DSH_PROFILE / DSH_PROFILE_DIR. The helper explicitly supplies the new one-time identifier.
+### Sign-in data check
+
+DSH stores a sign-in credential on every launch, and those credentials are never cleaned up. Once enough accumulate, the app can **fail to start** (reported as `Web authentication failed`).
+
+Settings shows the last check: how much is used, the limit (16 KiB), and how many records exist. **By default it only checks during a restart performed by this plugin** (that is when the database is not locked).
+
+> The database is always opened read-only. **It never deletes or modifies your sign-in data.** You can enable "back up on restart" to keep the last 3 copies; when usage is near the limit it tells you how to clean up manually and gives the exact path.
+
+### Leftover temp file preview
+
+DSH leaves change-snapshot copies in the system temp folder while diffing; a crash can leave them behind.
+
+This feature **only scans and previews — it never deletes anything**, because there is no reliable way to tell which copies another instance may still be using. It reports how many candidates exist and roughly how much space they take; deleting them is your call.
+
+### Hide "Feedback" in the account menu
+
+In the account menu, "Feedback" sits directly below "Settings" and opens an external web page — easy to hit by accident.
+
+This toggle hides it (**off by default**). If the item cannot be identified, nothing happens — it would rather leave it than touch the wrong entry.
+
+---
 
 ## Install
 
-### From npm
+### From npm (recommended)
 
 ```sh
 dsh plugin add @luoshuizhiwei/dsh-desktop-restart
 ```
 
 ### From source
-
-The package lives at `~/.dsh/local-plugins/dsh-desktop-restart` and mounts via the profile manifest:
 
 ```jsonc
 // ~/.dsh/profiles/desktop/package.json
@@ -95,228 +106,164 @@ The package lives at `~/.dsh/local-plugins/dsh-desktop-restart` and mounts via t
 }
 ```
 
-On older desktop builds the `desktop` profile is managed exclusively by the Electron app and `dsh plugin --profile desktop add` is refused (`profile "desktop" is managed exclusively by the Electron application`); declare the dependency and bundle by hand in that case, and the `node_modules` entry becomes a junction pointing at the source directory.
+The app must be **restarted once** after installing — that first one is manual.
 
-After installing, **restart the app once** to load it — that first restart has to be manual (the plugin isn't running yet).
+---
 
-## Usage
+## FAQ
 
-Five action entries and a read-only settings row share host state:
+**Why not use one of the "restart dsh web" plugins?**
+The desktop app's process model is completely different from `dsh web` in a terminal; those plugins do not work in the desktop app. See "Why a dedicated desktop restart plugin" below.
 
-1. **"Restart App" at the top of the left sidebar** — mounted on the official panel slot for third-party plugins (`sidebar.panellist` + `main`); **the row is drawn by the sidebar itself**, so it looks native. Clicking opens the restart panel in the main area; click "Restart" there.
-2. **"Restart App" at the bottom of the sidebar** — the official action slot for third-party plugins (a 42px action row; 36×36 circle when the sidebar is collapsed). Click twice to restart.
-3. **Conversation header button** — the refresh icon + "Restart" at the right of the conversation header.
-4. **Slash command** — type `/restart-desktop` in the composer.
-5. **Account menu → Restart Desktop App** — above Settings. Injection depends on the host menu structure; unsupported layouts are skipped with a diagnostic reason code.
-6. **Settings → General → Restart Desktop App** — read-only status and refresh, without a restart action. Countdown is configured in the plugin settings section.
+**Will a restart lose data?**
+A normal shutdown saves sessions. The plugin ends the Electron main process and deliberately lets the host child exit gracefully so session logs are flushed. A reply that is still streaming is interrupted and will not resume automatically.
 
-When idle, button entries require two clicks within five seconds to submit a normal waiting request; `/restart-desktop` submits once. With known active work, the first click arms a danger warning; after 900ms a second click forces an immediate restart, skipping waiting and countdown. The warning expires after 15 seconds by default (configurable 5–60). Header confirmation/warning text stays visible at every width; details remain in tooltips and accessible descriptions. A 202 response means accepted, not completed. Repeated normal submissions preserve the first deadline.
+**The button says "Locked" and does nothing?**
+A wait or countdown is in progress. Use "Cancel waiting" next to it.
 
-**While waiting or counting down**, the main button is locked; use Cancel waiting. **The pause question** also offers Restart now anyway with an additional confirmation. Immediate execution skips task waiting and countdown, while installation and identity hard guards remain mandatory. Cancellation after executing returns `cancelled:false` and the UI rereads host state. Expiry explicitly reports that no restart was executed. The compatibility command `/restart-desktop --force` explicitly accepts the risk of immediate execution.
+**The red "Restart anyway?" never goes away?**
+It expires after 15 seconds. If it stays, status reading is failing — try "Refresh status".
 
-**The UI uses official components**, not lookalikes:
+**The app fails to start after installing the plugin?**
+Most likely the sign-in data described above. Fully quit the app, delete `%APPDATA%\@deepseek-ai\dsh-desktop\Network\Cookies`, then reopen (the file is recreated; you will need to sign in again).
 
-- The sidebar panel row rides the official panel slot (`sidebar.panellist`): the plugin registers only `id / order / label` and an icon component — the **entire row is drawn by the sidebar**, so it cannot look off. Clicking switches the main area to the matching `main` panel, which triggers the restart with an official `Button` (primary).
-- The **main-area panel follows the page layout of its slot-mate** (the task board): it fills the main area's height, paints `--dsw-alias-bg-base`, uses `14px 16px 16px` padding, a 16px/700 title with a status word on the same row, 12px block gaps, and rounds the description, guard warning and result into separate cards. (Reported as a layout bug on 2026-10-20: it used to be a 560px column centred in a full-height area, reading like loose text floating in empty space.)
-- The sidebar-footer entry rides the official `sidebar.footer.action` slot (where the app's own plugin panel lives) and copies the 42px action row of its slot-mates verbatim; it becomes a 36×36 circle when the sidebar collapses to a rail (the slot passes `{ wide }`).
-- The header button copies the real button in that slot (`ui-jops`' `JobListAction`) measure for measure; non-idle state text remains visible at all widths, with a tighter limit below 540px.
-- Settings rows use official buttons and prefer the official refresh icon. A shared store assigns the pause question or immediate confirmation to one mounted action entry. Legacy guard responses still support official `RiskConfirmation`.
-- Color semantics use official tokens: danger red for header confirmation/warning and the panel force warning, secondary warning color while waiting/counting down, and error color for failures; the icon spins during handoff (honoring reduced-motion).
-- Official components are declared in `dsh.client.inject`; should DSH rename or move a package, the plugin falls back to its own **measure-copied** styles instead of crashing.
+---
 
-The full comparison (including the verbatim CSS and official source paths) is in `docs/official-ui-standard.md`.
+# Technical details
 
-## Choosing your entries
+The rest is for readers who want the implementation or want to contribute. Not needed for normal use.
 
-The plugin ships a **settings section** with five entry toggles — changes apply **immediately**, no restart or refresh (the same section also holds the two bundled extras below):
+## Why a dedicated desktop restart plugin
 
-| Toggle | Turning it off |
+The desktop app's process model differs completely from `dsh web` in a terminal:
+
+```
+DeepSeek Harness.exe            ← Electron main: window, tray, auto-update
+  └── DeepSeek Harness.exe      ← host child (same exe + ELECTRON_RUN_AS_NODE=1)
+        └── this plugin          runs dsh-desktop-host, listens on 127.0.0.1
+```
+
+Two consequences:
+
+1. **The host exiting is not an app restart.** The main process treats the child exit as a failure and shows the "startup failed" recovery dialog (its default button is "Restart"). It works, but needs a human click every time.
+2. **The main process exposes no restart channel.** The full IPC surface is `shutdown` / `quit-inspection` / `update-tasks` (main → host) and `ready` / `fatal` / `shutdown-complete` / `platform-session` (host → main); the renderer-side `DESKTOP_IPC` table has no restart either. The built-in "Restart App and Host" menu item is only added in development builds.
+
+So a one-click restart has to come from a process **outside the host**.
+
+## How the restart is performed
+
+1. The entry sends a same-origin POST to the plugin's own host route.
+2. The host checks the install guard, then owns waiting, countdown, pause questions and execution state. Normal requests wait for verified idle; explicit immediate execution still passes install and identity guards.
+3. After validation it writes a handoff record, spawns a **detached helper** via `process.execPath` (the desktop app itself) + `ELECTRON_RUN_AS_NODE=1`, and answers 202 immediately. The helper therefore needs neither a system Node nor `dsh` on PATH.
+4. The helper waits 1.5 s so the response reaches the browser, then — while the main process is still alive — reads its command line and executable path (the relaunch must preserve original arguments; a fallback kill must identify the process by path).
+5. The helper ends the **Electron main process** — deliberately without `/T`: the host child must survive so it can run its own graceful shutdown (`application.shutdown`) after IPC drops and flush session logs. `/T` would kill the host too, which is what actually loses data.
+6. The helper waits for the main process to disappear, then for the listening port to be released (probing by *connecting*, not *binding* — a speculative bind would occupy the very port the replacement needs).
+7. If the port is slow to release, only processes provably belonging to this instance (parent/child relationship, path and launch identity) are handled. It never widens the scope by image name, and never ends another instance merely for sharing a path; when identity cannot be proven it aborts and records why.
+8. The helper relaunches with a clean environment — `ELECTRON_RUN_AS_NODE` must be removed, or the "app" would start in Node mode as a windowless process. If the new instance exits immediately it retries (default 3 attempts), then gives up and asks the user to open it manually.
+9. The handoff directory keeps the latest 20 handoff/log sets; completed operation records are pruned to the latest 20 per profile, while pending, unknown and notice-referenced records are protected.
+
+## Guard criteria
+
+"Can restart" is not "should restart". The app's own quit path asks the host what work would be interrupted (`hasDesktopActiveTasks`) and shows a dialog; this plugin ends the main process directly and bypasses that check. So it implements equivalent guards:
+
+| Guard | Criterion | Blocks | Way out |
+| --- | --- | --- | --- |
+| Work running, or state unknown | `agents` + `jobs` services | sessions, tools, queued messages, background jobs of this instance | normal request waits; new work during countdown pauses with a question; explicit confirmation allows immediate execution |
+| Plugin installing/updating | the process recorded in `<profile>/.plugin-manager/run.json` **is alive right now** | built-in plugin manager, plugin market, any `dsh plugin` operation | **hard block**: `?force=1` does not bypass it |
+
+**Task changes are decided by the host**: re-checked every 5 s while waiting, up to once per second during countdown. New work creates a single question id; the question offers "continue waiting / restart now / cancel". Continuing waiting recomputes a full countdown but does not extend the original deadline.
+
+The criterion is **the process being alive**, not "the record file existing": `run.json` survives a hard kill, so blocking on file existence would lock the restart button forever.
+
+## Receipt
+
+The receipt is bound to the current profile, installation instance and the unique id of this restart; the helper passes that id only to the instance it launched, and the new host claims and consumes it once within a short window. A failed schedule invalidates the record.
+
+The receipt distinguishes request time from **host ready time**; it proves the new host loaded the plugin, not that the whole UI, every plugin or background task recovered. `downtimeMs` is presented as handoff duration, not as an exact UI downtime.
+
+## UI standards
+
+The UI uses the **official components**, not look-alikes:
+
+- The top sidebar entry mounts on the official panel slot (`sidebar.panellist`): the plugin registers only `id / order / label` plus an icon component, and the sidebar draws the entire row — so it cannot look non-native.
+- The main panel follows the page layout of the same slot's occupant (task board): full main-area height, official background token, 16px/700 title on the same line as the status word.
+- The bottom sidebar entry mounts on `sidebar.footer.action` and copies the 42px action-row spec of that slot's other occupants; it becomes a 36×36 circle when the sidebar collapses to a rail.
+- The header button copies the real official button in the same slot (`JobListAction` from `ui-jobs`).
+- Colour semantics use official tokens: danger red for confirm/warn, secondary warning for waiting/countdown, error colour for failure; no spinner under "reduce motion".
+- Official components are declared in `dsh.client.inject` and registered by the loader before this plugin runs; if DSH renames or moves a package and `require` fails, the plugin falls back to its own copy of the **verbatim official values**.
+
+Full comparison (verbatim official CSS and source paths) is in `docs/official-ui-standard.md`.
+
+## Entry toggles and defaults
+
+The five UI entries, the header refresh button and the slash command are **on by default** (the header refresh button defaults to off; the account-menu item still has to pass a structure check). Choices are stored **locally in the browser** (`localStorage`); **defaults** come from the plugin config — set them in the plugin's row in `~/.dsh/profiles/<profile>/cordis.patch.yml`:
+
+```yaml
+config: { panel: false, footer: false, header: false, settingsRow: false, accountMenu: false, command: false, enabled: false }
+```
+
+(`command` is the slash command, `enabled` is the master switch, `headerRefresh` controls the header refresh button.)
+
+| Toggle | When off |
 | --- | --- |
-| Sidebar panel entry | the top-of-sidebar row disappears (and its main-area panel) |
-| Sidebar footer entry | the bottom-of-sidebar row disappears — it may crowd other plugins' rows in the same slot; turn this off if they collide |
-| Conversation header button | the header button disappears |
-| Settings → General row | the read-only General settings row disappears |
-| Account menu entry | the injected restart item disappears; diagnostics remain available |
+| Top-left panel entry | The sidebar row disappears (and the main-area panel with it) |
+| Bottom sidebar entry | The bottom sidebar row disappears |
+| Conversation header button | The header button disappears |
+| Header refresh button | The "Refresh" button in the header disappears (off by default) |
+| Settings → General row | The read-only status row disappears |
+| Account menu entry | The restart item disappears from the account menu |
 
-All five UI entry switches and the slash command are **on by default** (menu injection still requires a compatible structure); choices are stored in the **local browser** (`localStorage`); **defaults** come from the plugin's config — in `~/.dsh/profiles/<profile>/cordis.patch.yml`, set `config: { panel: false, footer: false, header: false, settingsRow: false, accountMenu: false, command: false, enabled: false }` on this plugin's row to change them in one place (`command` is the `/restart-desktop` slash command; `enabled` is the master switch).
+## Sign-in credential health
 
-## Authentication Cookie health and recovery confirmation
+Settings shows the last downtime check: estimated usage, the 16 KiB default limit, the number of auth cookies and the check time. It is not live monitoring. Without a sample it shows "no downtime check result yet"; ordinary manual starts and quits do not update it.
 
-Settings show the last downtime estimate, the default 16 KiB limit, authentication Cookie count and check timestamp. This is not live monitoring. With no sample the UI says No downtime sample yet. Normal manual launches/exits do not refresh the sample; Recheck only schedules work for the next plugin restart and never opens the database while the app is running.
+"Back up the cookie database on restart" is off by default; "warn at 80%" is on. The database is always opened read-only; the optional consistent backup keeps the last 3 copies and **never deletes any cookie**. Above the limit it shows how to quit DSH, keep a backup and clean up manually. This feature does not raise the request header limit.
 
-Cookie backup defaults off; the 80% warning defaults on. Database access is read-only. Optional consistent backups retain three copies; no Cookies are automatically deleted. Legacy authCookieClean values do not enable the new switch. Over-limit samples show instructions to quit DSH, keep a backup and handle Cookies manually. Surviving old-instance processes or unverified identities skip database work without stopping the restart. The plugin does not raise the HTTP header limit.
+The check runs in a worker thread with an 8-second budget, then terminates and waits for the thread to exit, so a stuck database cannot stall the restart. Backups are written as `.partial` and renamed, so only complete files count toward retention.
 
-Recovery requires this restart nonce's host receipt, an authenticated client acknowledgement after a renderer frame, and transport owned by the verified new instance. An inspector listener alone is not success. This confirms host/restart-client connectivity, not every plugin or task. Legacy hosts without receipts remain unconfirmed. The existing downtimeMs is labeled handoff duration, not exact UI downtime.
+## Leftover snapshot preview
 
-Submissions and status reads have a ten-second deadline. A missing submission reply is reconciled with host state rather than blindly retried. New hosts reject submissions delayed beyond expiresAt; a status observed after that deadline can safely reconcile the UI. Legacy hosts without that proof stay conservatively locked and suggest a manual quit/reopen. Status preserves the last terminal result until a new request; another reader cannot consume it.
+DSH keeps change-comparison snapshots under `dsh-workspace-changes-*` in the system temp folder; a crash can leave copies behind, but age alone does not prove a copy is orphaned.
 
-Completed operation records retain the latest twenty eligible records per profile. Pending/unknown records and unread diagnostic references remain protected.
+**Currently it only scans and previews; it never deletes.** Upstream has no reliable record of which snapshots are active, and the production route will not fabricate a deletion permit. The scan toggle remains "scan on startup" (off by default): when enabled it scans once 10 s after startup, and a manual scan is also available.
 
-## Previewing leftover change snapshots
+A candidate must be a real directory with the expected prefix, created before this host started, at least 24 hours old, with no writes anywhere in the tree since startup. Symlinks, junctions, read failures and trees that cannot be fully inspected are skipped conservatively. Results show scanned count, candidate count, estimated size and the reason nothing was deleted; candidate size is never presented as reclaimed space.
 
-DSH stores change-comparison snapshots under system Temp directories named dsh-workspace-changes-*. A crash may leave copies behind, but age does not establish ownership. Another DSH instance can write below objects without changing the snapshot root timestamp.
+## API
 
-**The current 0.4.5 host scans and previews; it does not delete snapshots.** Upstream exposes no authoritative registry of live snapshot owners, and production routes do not manufacture permission to delete. The existing sweep preference now means automatic scanning ten seconds after startup, off by default; a manual scan is also available.
+`GET /dsh-desktop-restart/api/status` returns `restartRequest` with `state` (idle / waiting / countdown / paused / executing / terminal), `countdownRemainingMs`, `countdownUntil`, `deadlineAt`, `pausedReason` and `ask`. The legacy `waiting` field still appears while waiting, counting down or paused.
 
-A candidate must be a real directory with the exact prefix, predate this host, be at least twenty-four hours old, and have no post-start writes anywhere in its tree. Symlinks, junctions, unreadable entries and incomplete inspection cause conservative skipping. Results show scanned and candidate counts, estimated candidate size, and the reason nothing was removed. Candidate bytes are not reported as reclaimed disk space.
+`POST /dsh-desktop-restart/api/restart?choice=wait|now|cancel` is valid only while paused; new clients also send `ask`, and a stale id returns 409. Cancel in other stages uses `cancelWait=1`; immediate execution accepts `force=1&now=1`.
 
-The internal library retains a deletion path only for a trusted owner check that explicitly confirms no other active host. HTTP parameters cannot supply that check. The current host has no such proof and therefore never enables deletion, whether scanning automatically or manually. Deletion can be integrated once upstream provides reliable ownership information.
+`POST /dsh-desktop-restart/api/prefs?countdown=<integer>` stores the next countdown (0–60); out-of-range or non-integer values return 400 and leave the previous value untouched.
 
-## Hiding "Feedback" in the account menu
-
-In the account menu (the avatar / "More" at the bottom of the sidebar), right below "**Settings**" sits "**Feedback**" — clicking it opens an external website. The official item is rendered as a `button[role="menuitem"]` with no `id` and no `data-*`, so only a script that recognizes the text can hide it — pure CSS can't select it. This plugin therefore matches **by text** (`意见反馈` / `Feedback`) and removes the item from view once the menu mounts: menus render **on open**, so it's a `MutationObserver`, not a one-time scan.
-
-| Aspect | Behavior |
-| --- | --- |
-| Default | **not hidden** (since 2026-10-20: a fresh install leaves the menu as it is; turn it on to hide). It used to be hidden by default |
-| Toggle | **Settings → Plugins → Restart Desktop App → Bundled extras** |
-| Stored | local browser (`localStorage`); the host is not involved |
-| After turning off | the hidden item **reappears immediately**, no refresh |
-| Unrecognized text | do nothing — rather leave it than harm other menu items |
-
-It touches exactly this one menu item: the test is "this `button[role=menuitem]`'s text equals `意见反馈` / `Feedback`"; every other item is untouched byte for byte (covered by a smoke test).
-
-## Request and countdown API (0.4.5 batch 4A)
-
-The plugin settings section saves an integer countdown of 0–60 seconds (default 0). Failed saves restore the confirmed value and display the error. A change only affects the next request.
-
-`GET /dsh-desktop-restart/api/status` adds `restartRequest`: `state` (idle / waiting / countdown / paused / executing / terminal), `countdownRemainingMs` (milliseconds only during countdown), `countdownUntil` (absolute end time only during countdown), `deadlineAt` (absolute request deadline), `pausedReason` and `ask` (non-null only while paused). Legacy `waiting` remains present across waiting, countdown and pause; `restartOp` and `restartBusy` retain their operation semantics.
-
-`POST /dsh-desktop-restart/api/restart?choice=wait|now|cancel` applies only while paused. New clients also send `ask`; a stale identifier returns 409. Other pre-execution stages retain `cancelWait=1`; immediate execution retains `force=1&now=1`. `cancelled` truthfully states whether cancellation occurred. Executing is irrevocable. `POST /dsh-desktop-restart/api/prefs?countdown=<integer>` saves the next countdown; invalid or out-of-range values return 400 without changing the saved value.
-
-The client mirrors host state through one shared two-second network poll. A shared one-second display clock derives remaining time from the host countdownUntil and never triggers execution. Pre-execution states display the absolute auto-cancel deadline. Suspended windows or a busy event loop may delay display or execution. Work shorter than the host sampling interval can be missed. Real Electron timing, long waits and concurrent interactions still need acceptance testing.
-
-## Profile settings, unread diagnostics and scan cancellation (batch 4B)
-
-Host settings use `desktop-restart/settings-<profileId>.json`, with the same profile-directory identity as receipts. If the new file is absent and legacy settings.json exists, an exclusive create copies the contents once. The legacy file is never changed or deleted; an existing profile file is never overwritten by migration. Migration errors are reported in status and reject settings writes.
-
-Failures and unconfirmed outcomes each create one redacted diagnosis per operation ID and outcome category, then attempt a Windows toast. No central MessageBox is used. Unread reminders survive missing permission, suppression or unconfirmed delivery until explicitly marked read. Marking read writes a separate marker and retains restartOp without releasing mutual exclusion; read diagnoses follow the retention policy below. `POST /dsh-desktop-restart/api/prefs?readNotice=<id>` only handles a known diagnosis of the current profile. Public details include the human explanation, original reason code and numeric stage timings, without process paths, command lines or credentials.
-
-The sender uses built-in Windows PowerShell / WinRT and an available PowerShell notification identity; it installs no modules. Clicking only opens a saved redacted diagnostic HTML document in the default viewer. It never restarts DSH or a model. The click bridge and toast expire after ten minutes. Notification Center presentation, Focus Assist and click activation still require real acceptance; submitted does not mean visible.
-
-The scan row exposes Cancel scan via `POST /dsh-desktop-restart/api/prefs?cancelSweep=1`. Production passes shouldStop into recursive traversal; cancellation returns completed partial results with partial=true. An in-flight filesystem IO must finish before the response can settle. Restart requests capture settings and the original deadline on arrival, stop and await the active scan before their state transition, reject execution if unloaded during that wait, and their waiting/executing stages suppress new scans. Production remains preview-only with removed=0.
-
-Cancellation, expiry and asynchronous execution results remain terminal until the next request replaces them. Status reads do not consume results, so multiple entries see the same outcome. Operation diagnoses and unknown-operation locks remain independent. Missing or non-integer countdown capability disables the editor and asks the user to restart an outdated host.
+The client only mirrors host state over a single 2-second poll; the countdown display is derived from the host's `countdownUntil` plus a local one-second clock and never decides execution.
 
 ## Security model
 
-`POST /dsh-desktop-restart/api/restart` completes every check before acting:
+`POST /api/restart` completes all checks before doing anything:
 
 | Check | Rejection |
 | --- | --- |
 | Method is not POST | `405` with `Allow: POST` |
 | TCP peer is not loopback | `403` |
 | `Host` is not a loopback name | `403` |
-| `forwarded` / `x-forwarded-for` / `x-real-ip` present | `403` |
-| No `Origin` and `Sec-Fetch-Site` is not `same-origin` | `403` |
-| `Origin` present but its host ≠ `Host` | `403` |
-| Platform auth: no browser session cookie | `401` (the message says what's missing) |
-| Platform auth: trust fence refused (Host / Origin / cross-site marker) | `403` (a distinct message — different fix) |
-| Host is not the Electron desktop build | `409` |
-| `config.enabled` is false | `403` |
-| A restart handoff is already in progress | `409` |
-| Live installation/update process | `409` + `blocked:true`, including forced requests |
+| Any `forwarded` / `x-forwarded-for` / `x-real-ip` | `403` |
 
-Disabled, non-desktop, mutual-exclusion, platform, installation and identity checks cannot be bypassed by immediate execution. Ordinary requests wait for verified idle; new work during countdown pauses the request.
+When the platform auth service is unavailable, write routes return 503 instead of allowing the request.
 
-**Why a missing `Origin` passes**: the desktop pages load over the `dsh-app://` protocol and the shell forwards in-page `fetch('/…')` to the host port, and such forwarded requests carry **no `Origin`**. Requiring one outright would make the button return 403 forever in the desktop app — one reason the market's `dsh-simple-restart` fails there. So with no `Origin`, every other condition must hold instead (loopback peer, loopback Host, no proxy traces, `Sec-Fetch-Site` absent or `same-origin`).
+## Diagnostics and settings storage
 
-**The second gate is the platform's browser auth** (added 2026-10-15): the list above is only half of the fence. DSH guards its own `/api` in two steps — fence + **browser cookie auth** — and the platform opens both to plugin routes: `ctx.connection.requestRejection(request) -> 401 | 403 | undefined`. With only the fence, any local process **sending no headers at all** could give orders (measured: `curl` hit the restart/sweep routes freely while DSH's own `/` returned 401). The write routes now take that step too:
+Host settings live in `desktop-restart/settings-<profileId>.json`, isolated by profile directory identity. When the new file is missing and a legacy `settings.json` exists, the new file is created exclusively and copied once; the legacy file keeps its original content.
 
-- a platform `401` / `403` is passed through, with two distinct messages (missing credentials vs. Host/Origin mismatch — different fixes, and mixing them sends people guessing at a 403);
-- with no `connection` service in the composition, this degrades to "not applicable" and the self-checks above still apply — it's an optional dependency, and its absence must never keep the plugin from loading;
-- if platform authentication throws, sensitive writes return 503 with an authentication-unavailable message; the diagnostic status route remains readable instead of treating an exception as permission;
-- deployments that genuinely need the old behavior (a desktop-shell path without cookies) can set `config.platformAuth` to `false`.
+Failures and unconfirmed results create one redacted diagnostic record per operation id and result class, and attempt a Windows toast. Without permission or confirmation the plugin still shows an unread reminder until it is explicitly marked read. Diagnostics never contain process paths, command lines or credentials.
 
-`POST /dsh-desktop-restart/api/prefs` and the compatibility `/api/sweep` route share method, origin and platform-auth checks. Parameter enabled=0|1 controls automatic scanning and run=1 scans now. Scans currently preview only; clients cannot provide the internal owner authorization for deletion. Preference persistence failures return an explicit error.
-
-**The status route only diagnoses, never blocks**: it must be able to explain why the button doesn't work even when auth fails, so it still answers `200` and reports `{ enforced, available, verdict, error }` in its `platformAuth` field — letting the UI explain instead of leaving people to guess at a 401.
+Cross-process restarts use `desktop-restart/restart.lock` (atomic creation plus stale-lock takeover) so two instances cannot end the same main process concurrently.
 
 ## Known limitations
 
-- **Electron desktop build only.** On `dsh web` the status route truthfully reports `desktop: false` and the button is disabled; that's by design, not a bug.
-- **Ports are dynamic.** Readiness associates a loopback listener with the newly spawned main process and its verified host descendants, rather than accepting another instance with the same image name. Unverifiable readiness is reported as unknown.
-- **Explicit immediate execution can interrupt tasks.** It skips task waiting after additional confirmation and does not roll back partially written files. Installation hard rejection remains in force.
-- **The install guard judges liveness by pid.** If the recorded process already exited and the OS reused that pid for another process, it can be misjudged as "still installing". Rare in practice: `run.json` exists only during an operation or as crash residue, and the app cleans its own residue; when it happens, the misjudgment clears the moment that process ends. The app itself judges the same way.
-- **The main process is hard-killed.** Its own cleanup (window state, tray) doesn't run. The session data that matters lives in the host process, which shuts down gracefully. That's the price of "one click" — the main process exposes no restart channel.
-- **The fallback sweep may end the host, whose session logs may then be incomplete.** Only in one scenario: the main process is gone and the port still hasn't been released after 30 s — meaning the host is stuck, and without ending it the new instance can't bind. It is never swept up with the "leftover processes"; the log says so explicitly. Normally the port frees within a second and this path never runs.
-- **Unavailable identity queries stop the restart.** The helper cross-checks the host-provided parent PID with executable path, ancestry and process creation identity. It does not kill blindly when the process table is unavailable. Use an ordinary manual quit and launch when policy blocks these queries.
-- **Original launch arguments must be reliably recoverable.** Uncertain arguments cause `args-uncertain`; the helper does not silently relaunch without them.
-- **No guard covers an app auto-update in progress.** The updater leaves no readable state behind; the only defense is not restarting mid-update.
-- **DSH upgrades may change service contracts.** Unknown task state keeps waiting; unavailable identity queries stop execution. Pre-execution requests live only in the current host memory and are not restored after unload or exit.
-- **Only verified on Windows.**
-- **Third-party skins (e.g. `dsh-claude-style`) use `aria-label` as a visible row title.** When that skin takes over the sidebar footer it names each row from `aria-label || textContent`. This plugin's `aria-label` therefore carries only **state words of four characters or fewer** ("重启应用", "已排程", "重启中", "重试" — or "Restart", "Scheduled", … in English), while the detailed hint ("Work in progress (2 agents generating or running tools); click twice to restart anyway") lives in visually hidden text referenced by `aria-describedby` — screen readers still announce it, but it is never painted as button text. (Fixed once on 2026-10-20: the hint used to be concatenated into `aria-label` and appeared as a very long row title in the collapsed bottom-left corner.)
-
-## Diagnostics
-
-Each restart writes a handoff description and helper log under `~/.dsh/desktop-restart/` (latest 20 pairs kept):
-
-```
-restart-<timestamp>.log       full helper diagnostics
-handoff-<timestamp>.json      this handoff's target and parameters
-```
-
-A healthy restart logs:
-
-```
-helper started: helper=… host=… main=… port=… exe=…\DeepSeek Harness.exe
-preserving 0 launch argument(s): []
-ending the Electron main process … without /T, so the host can close gracefully
-taskkill /PID … /F ok
-main process exited
-port … released
-relaunched "…\DeepSeek Harness.exe" as pid …
-relaunched process (pid …) is still alive after 2500ms
-the new instance is listening on port … — restart complete
-```
-
-It never lies about success:
-
-```
-the relaunched process (pid …) is already gone — attempt 1 did not take
-relaunch attempt 2/3 in 1500ms
-the restart did not take after 3 attempt(s); the application is not running
-failure notice dispatched to the user
-```
-
-## Development
-
-```sh
-npm test
-```
-
-The base offline smoke suite has 119 checks, four Windows-only. npm test also runs host, client and engine behavior regressions for one-time consumption, cancellation, failed-write rollback, retry, localization, instance isolation and preview safety. Components use React/fetch stubs and the helper uses isolated process/VM stubs. Tests do not connect to the real DSH host, send messages to real sessions, or remove real Temp snapshots. CI runs Ubuntu Node 20/22/24 and Windows Node 24. Exact counts and scope come from test output; source-text checks are not real interface acceptance.
-
-## Language
-
-UI copy goes through the official locale service (issue #1): the plugin registers a `{ zh, en }` dictionary and the **language follows the main DSH app's setting** — no manual toggle. Host-side error messages have no locale service available (true for official plugins too) and are returned in Chinese; the client substitutes its own translation when it has translatable information, and shows the original text otherwise. Without the locale service in the composition it falls back to the browser language, and never fails to load. The "hide Feedback" match strings (both Chinese and English) are **not translated** — they match the menu item's literal text.
-
-## Releasing
-
-Releases are automated via CI (`.github/workflows/ci.yml`) with **no npm credentials stored locally**:
-
-1. Regular pushes → CI runs offline tests on Ubuntu Node 20/22/24 and Windows Node 24;
-2. **Release gate (rule since 2026-10-20)**: before tagging `v*`, show the author what changed — the tag is pushed only after the author approves. Pushing the tag publishes automatically, so this human gate is the only checkpoint and may not be skipped;
-3. Push a `v*` tag → after offline tests pass and the tag exactly matches the package version, the publish job publishes to npm via **OIDC Trusted Publishing** (npm ≥ 11.5.1, no tokens, no OTP), with automatic provenance attestation for public repositories.
-
-One-time registration (done 2026-10-20): npmjs.com → this package → Settings → **Trusted Publisher** → GitHub Actions, with owner `luoshuizhiwei`, repo `dsh-desktop-restart`, workflow `ci.yml`, and **Allowed actions including `npm publish`** (the default allows only staged publish, and direct publishing would be refused without the checkbox). Two official-docs caveats: the first successful publish must happen **within 2 days** of registration or the configuration expires; npm does not validate the form on save — fields are case-sensitive and must match the repository exactly.
-
-## License
-
-MIT
-
-Release tags must exactly equal v plus package.json version. The workflow enforces this before npm publication. Author approval remains required before pushing any release tag; external repository protection and environment approval settings must be verified separately.
-
-## Diagnostic retention and one-time migration (batch 4C)
-
-Unread diagnoses are never automatically removed. After a new diagnosis or mark-read operation, retain the newest 50 read records per profile by at, retiring their .json/.html/.delivery/.read siblings together. Status reads do not prune. Missing JSON is skipped, missing read markers mean unread, and missing delivery files mean visibility-unconfirmed. Multi-file removal is not transactional; IO failures are reported.
-
-The directory index and immutable diagnosis JSON are cached for up to two seconds. Directory metadata changes and local create/read operations invalidate immediately. Delivery metadata is checked on every read, and returned objects cannot mutate the cache. External in-place JSON edits appear after TTL expiry; external file creation/removal invalidates through directory metadata.
-
-Successful legacy migration writes settings-migrated-<profileId>. Existing profile settings without a marker are adopted without overwriting them. Once marked, deleting profile settings uses defaults instead of resurrecting legacy settings. Status settingsMigrated reflects migration/adoption at host activation; settingsMigrationError reports failures and prefs writes return 503. Legacy bytes and mtime remain unchanged. Manually deleting the marker makes migration eligible at the next activation.
-
-Development uses `npm ci --ignore-scripts`, `npm run lint` and `npm test`. ESLint checks undefined names, unused variables and unreachable code; new test helpers also check two-space indentation. Existing source is not reformatted wholesale. Test output separates registered source-text checks, historical reproductions and skipped native SQLite suites from current behavior evidence.
-
-Core restart supports Node >=20. Optional Cookie checks/backups require Node >=22.16.0 (node:sqlite and backup). The Node 20 CI entry explicitly skips the native SQLite suite; maintained Node 22/24 entries run it. Waiting for idle by default is intentional compatibility policy: shouldWaitForIdle is now the internal name, bare force still waits, and only explicit force+now executes immediately. Missing platform authentication makes write routes return 503.
-
-New handoff files store only the executable basename. The full path travels in a helper-only environment variable, is omitted from launch logs and is not inherited by the relaunched app. Valid completed orphan op records without profileId become eligible after seven days; pending, unknown, damaged and unread-linked evidence remains protected.
+- Package version `0.4.5`.
+- Accepted on a real machine: the full restart chain (including downtime measurement and receipt), account-menu first-open injection, panel button states, log redaction.
+- Not yet accepted: screen readers, frame-by-frame absence of visual flicker, menu keyboard navigation, multi-window concurrency, per-theme and narrow-width pixel layout.
+- Offline tests cover the state machine, fail-safes, concurrency and isolated fixtures; passing `npm test` does not mean the real-machine items above are accepted.
+- Core restart requires Node.js ≥ 20; the sign-in credential check requires Node.js ≥ 22.16 (`node:sqlite`) and is skipped automatically on older versions.
