@@ -17,7 +17,7 @@ function makeProcess(pid, parentPid, path, createdAt, commandLine = 'app.exe') {
   return { pid, parentPid, path, createdAt: new Date(createdAt).toISOString(), commandLine }
 }
 
-function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false }) {
+function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failLaunchWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false }) {
   let clock = Date.now()
   const main = makeProcess(100, 1, targetExe, clock - 20_000, '"C:\\DSH\\app.exe" --user-data-dir=C:\\profile-A')
   const host = makeProcess(101, 100, targetExe, clock - 15_000, '"C:\\DSH\\app.exe" --expose-internals')
@@ -121,11 +121,11 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
   }
   const fakeRequire = (specifier) => {
     if (specifier === 'node:worker_threads') return {Worker:class extends EventEmitter {
-      constructor(_file,{workerData}) {super();if(authCookieFailure==='timeout')return;queueMicrotask(async()=>{
+      constructor(_file,{workerData}) {super();if(authCookieFailure==='timeout'||authCookieFailure==='terminate-fails')return;queueMicrotask(async()=>{
         const result=await module.exports.checkAuthCookies(workerData.authCookieCheck,line=>this.emit('message',{note:line}))
         this.emit('message',{result});this.emit('exit',0)
       })}
-      async terminate(){notes.push('fixture Cookie worker terminated');this.emit('exit',1)}
+      async terminate(){notes.push('fixture Cookie worker terminated');if(authCookieFailure==='terminate-fails')throw Object.assign(new Error('cannot terminate'),{code:'EPERM'});this.emit('exit',1)}
     }}
     if (specifier === 'node:child_process') return childProcess
     if (specifier === 'node:fs') return {
@@ -142,6 +142,7 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
       writeFileSync(file, text, options) {
         if (options?.flag === 'wx' && operationFiles.has(String(file))) {const e=new Error('exists');e.code='EEXIST';throw e}
         if (finalWriteFailure && String(file).startsWith(opPath) && (String(text).includes('"result":"ok"') || String(text).includes('"stages":{"verify"'))) throw new Error('fixture final/timing disk full')
+        if (failLaunchWrite && String(file).startsWith(opPath) && (String(text).includes('"phase":"port-wait"') || String(text).includes('"phase":"launch"'))) throw new Error('fixture launch bookkeeping disk full')
         if ((failOperationWrite && String(file).startsWith(opPath)) || (failIdentityWrite && String(text).includes('"helperIdentity"'))) throw new Error('simulated operation record write failure')
         operationFiles.set(String(file), String(text))
       },
@@ -171,7 +172,7 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
     Buffer,
     Date: fakeDate,
     Promise,
-    setTimeout(callback, ms) { if(ms===8000){if(authCookieFailure==='timeout')queueMicrotask(callback);return {unref(){}}}; clock += ms; callback(); return { unref() {} } },
+    setTimeout(callback, ms) { if(ms===8000){if(authCookieFailure==='timeout'||authCookieFailure==='terminate-fails')queueMicrotask(callback);return {unref(){}}}; clock += ms; callback(); return { unref() {} } },
     clearTimeout() {},
     queueMicrotask,
   }, { filename: helperPath })
@@ -502,3 +503,20 @@ assert.equal(timedCookie.operation.result,'ok')
 assert.equal(timedCookie.launchEnvs.length,1)
 assert.ok(timedCookie.notes.findIndex(n=>n.includes('worker terminated'))<timedCookie.notes.findIndex(n=>n.includes('relaunched "')))
 console.log('PASS COOKIE BUDGET FLOW: timed-out optional check stops worker before app launch; restart still succeeds')
+
+// 2026-11-02 自检发现的两条「杀完主进程后不拉起」路径；修复后必须有回归覆盖。
+const terminateFails=await runHelperScenario({foreignListener:false,startNewHost:true,authCookieFailure:'terminate-fails'})
+assert.equal(terminateFails.coreError,null)
+assert.equal(terminateFails.launchEnvs.length,1)
+assert.equal(terminateFails.operation.result,'ok')
+assert.equal(terminateFails.cookieHealth.reason,'check-aborted')
+assert.ok(terminateFails.notes.some(n=>n.includes('check aborted')&&n.includes('restart continues')))
+assert.ok(terminateFails.notes.findIndex(n=>n.includes('check aborted'))<terminateFails.notes.findIndex(n=>n.includes('relaunched "')))
+console.log('PASS COOKIE TERMINATE-REJECT: rejecting terminate can no longer abort the relaunch; unavailable record keeps the last sample contract')
+
+const launchWriteFails=await runHelperScenario({foreignListener:false,startNewHost:true,failLaunchWrite:true})
+assert.equal(launchWriteFails.coreError,null)
+assert.equal(launchWriteFails.launchEnvs.length,1)
+assert.equal(launchWriteFails.operation.result,'ok')
+assert.ok(launchWriteFails.notes.some(n=>n.includes('port-wait phase could not be persisted; restart continues')))
+console.log('PASS LAUNCH BOOKKEEPING: failing op-record writes after the kill no longer strand the user with a closed app')
