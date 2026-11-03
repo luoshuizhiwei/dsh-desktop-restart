@@ -1087,6 +1087,64 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '10') {
   results.push({case:'4B-10 confirmed restart supersedes older unread diagnostics only',passed:true})
 }
 
+if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '11') {
+  // 2026-11-03 r2 审查 A1：记录缺失且 restart.lock 不存在 —— 成功重启后的常态
+  //（helper 结束必然删锁；记录再被清理工具/杀软/坏块弄丢就落进这条）。旧判据
+  // 只认「锁在且持有者不在」，锁不存在时永远推不出结论 → 永久锁死。
+  // 现在的行为：先按 HANDOFF_DEADLINE_MS（4 分钟）的时间闸保持锁定，过期解锁。
+  let a1Now = Date.now()
+  class A1Date extends Date {
+    constructor(value) { super(value === undefined ? a1Now : value) }
+    static now() { return a1Now }
+  }
+  const a1Dir = `${home}\\profiles\\a1-missing`
+  directories.add(a1Dir); directories.add(a1Dir + '\\node_modules'); files.set(a1Dir + '\\package.json', '{}')
+  files.delete(stateDir + '\\restart.lock')
+  const host = await boot({ profile: a1Dir, restartId: 'a1-missing-record', clock: A1Date })
+  const statusOf = async () => (await host.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')).body
+  const early = await statusOf()
+  assert.equal(early.restartOp.reason, 'record-missing')
+  assert.equal(early.restartOp.busy, true, '4B-11: inside the grace window the profile stays locked')
+  assert.equal(early.restartOp.needsManualCheck, true)
+  a1Now += 241_000
+  const late = await statusOf()
+  assert.equal(late.restartOp.reason, 'record-missing')
+  assert.equal(late.restartOp.busy, false, '4B-11: a missing record with no lock releases after the handoff deadline')
+  assert.equal(late.restartOp.needsManualCheck, true, '4B-11: releasing the lock still asks for a manual check')
+  // 人工出口仍然有效（界面侧由 4B-13 覆盖按钮）。
+  const cleared = await host.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?clearOp=1')
+  assert.equal(cleared.status, 200)
+  assert.equal((await statusOf()).restartOp, null, '4B-11: manual clear still works after the timed release')
+  for (const dispose of host.disposers) dispose()
+  console.log('PASS 4B-11 record-missing without a lock stays locked for the grace window, then releases')
+  results.push({case:'4B-11 record-missing without lock releases after grace window',passed:true})
+}
+
+if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '12') {
+  // 2026-11-03 r2 审查 E5：startedAt 解析失败 → ageMs 为 null → 既不标超时也
+  // 进不了回收，旧代码 needsManualCheck=false，界面显示得像「正在重启」却永久
+  // 锁死。现在必须把「需要人工核对」说出来。
+  const e5Dir = `${home}\\profiles\\e5-corrupt`
+  directories.add(e5Dir); directories.add(e5Dir + '\\node_modules'); files.set(e5Dir + '\\package.json', '{}')
+  files.set(`${stateDir}\\op-e5-corrupt.json`, JSON.stringify({
+    schema: 1, id: 'e5-corrupt', phase: 'verify', result: 'pending', pid: 901, hostPid: 200,
+    startedAt: 'not-a-date', stages: {},
+  }))
+  files.delete(stateDir + '\\restart.lock')
+  const host = await boot({ profile: e5Dir, restartId: 'e5-corrupt' })
+  const body = (await host.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')).body
+  assert.equal(body.restartOp.result, 'pending')
+  assert.equal(body.restartOp.ageMs, null, '4B-12: an unreadable startedAt keeps ageMs null')
+  assert.equal(body.restartOp.busy, true, '4B-12: unverifiable age keeps the profile locked')
+  assert.equal(body.restartOp.needsManualCheck, true, '4B-12: an op whose start time cannot be read must be flagged for manual check')
+  const refused = await host.request('/dsh-desktop-restart/api/restart', 'POST', '/dsh-desktop-restart/api/restart')
+  assert.equal(refused.status, 409, '4B-12: restart stays refused while the state is unreadable')
+  for (const dispose of host.disposers) dispose()
+  files.delete(`${stateDir}\\op-e5-corrupt.json`)
+  console.log('PASS 4B-12 an op with an unreadable start time stays locked and asks for a manual check')
+  results.push({case:'4B-12 unreadable startedAt flags needsManualCheck and stays locked',passed:true})
+}
+
 if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '3') {
   for (const action of ['cancelSweep=1','restart']) {
     let control, finish, count=0

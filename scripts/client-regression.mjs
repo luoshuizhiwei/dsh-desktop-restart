@@ -894,6 +894,75 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '9') {
   console.log(`ok ${passed} - 4B-9 read diagnostics render as quiet history while unread ones stay alerts`)
 }
 
+if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '13') {
+  // 2026-11-03 r2 审查：宿主的 clearOp 路由早已存在，但客户端从来没有入口 ——
+  // 记录缺失时用户是唯一能核对现场的人。面板必须给得出这个按钮。
+  let cleared = false
+  const recordMissing = () => reply(200, statusBody('off', { restartOp: { id: 'missing-1', phase: 'unknown', result: 'unknown', reason: 'record-missing', stages: {}, ageMs: null, argsPreserved: false, helperAlive: null, helperVerified: false, needsManualCheck: true, busy: true } }))
+  const harness = makeHarness(async (url, options) => {
+    if (options.method === 'POST') {
+      assert.match(url, /clearOp=1/u, '4B-13: the button must call the host clearOp route')
+      cleared = true
+      return reply(200, { ok: true, cleared: true })
+    }
+    return cleared ? reply(200, statusBody('off', { restartOp: null })) : recordMissing()
+  })
+  const mounted = harness.render(harness.panelComponent)
+  await flush()
+  let tree = harness.render(harness.panelComponent, mounted.hook).tree
+  const clearButton = buttonWithText(tree, 'Verified — clear restart state')
+  assert.ok(clearButton, '4B-13: a record-missing state must offer the manual clear action')
+  clearButton.props.onClick()
+  await flush()
+  tree = harness.render(harness.panelComponent, mounted.hook).tree
+  assert.equal(cleared, true)
+  assert.equal(buttons(tree).some((button) => textContent(button) === 'Verified — clear restart state'), false, '4B-13: the action disappears once the host reports no operation')
+  assert.equal(walk(tree, (node) => node.props && node.props.className === 'dshdr-panel-warn' && /清除没有成功|Could not clear/u.test(textContent(node))), null, '4B-13: no error line when the host accepts the clear')
+  harness.unmount(mounted.hook)
+  // 反例 1：执行中（pending）不给按钮 —— 宿主一律 409，给了只会制造失败提示。
+  const busy = makeHarness(async () => reply(200, statusBody('off', { restartOp: { id: 'busy-1', phase: 'verify', result: 'pending', stages: {}, ageMs: 1000, needsManualCheck: false, busy: true } })))
+  const busyMount = busy.render(busy.panelComponent)
+  await flush()
+  tree = busy.render(busy.panelComponent, busyMount.hook).tree
+  assert.equal(buttons(tree).some((button) => textContent(button) === 'Verified — clear restart state'), false, '4B-13: a running operation does not offer clearing')
+  busy.unmount(busyMount.hook)
+  // 反例 2：宿主拒绝（锁仍被活进程持有）→ 错误留在面板、按钮保留。
+  const rejecting = makeHarness(async (url, options) => {
+    if (options.method === 'POST') return reply(409, { ok: false, cleared: false })
+    return reply(200, statusBody('off', { restartOp: { id: 'missing-2', phase: 'unknown', result: 'unknown', reason: 'record-missing', stages: {}, ageMs: null, needsManualCheck: true, busy: true } }))
+  })
+  const rejectMount = rejecting.render(rejecting.panelComponent)
+  await flush()
+  tree = rejecting.render(rejecting.panelComponent, rejectMount.hook).tree
+  buttonWithText(tree, 'Verified — clear restart state').props.onClick()
+  await flush()
+  tree = rejecting.render(rejecting.panelComponent, rejectMount.hook).tree
+  assert.match(textContent(tree), /Could not clear the state/u, '4B-13: a host rejection must be visible on the panel')
+  assert.ok(buttons(tree).some((button) => textContent(button) === 'Verified — clear restart state'), '4B-13: the button stays available after a rejection')
+  rejecting.unmount(rejectMount.hook)
+  passed += 1
+  console.log(`ok ${passed} - 4B-13 the manual clear action exists for record-missing, is refused-safe, and never appears while running`)
+}
+
+if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '14') {
+  // 2026-11-03 r2 审查 E5：startedAt 读不出来的 pending 不再伪装成「正在重启」。
+  const harness = makeHarness(async () => reply(200, statusBody('off', { restartOp: { id: 'corrupt-1', phase: 'verify', result: 'pending', stages: {}, ageMs: null, argsPreserved: false, helperAlive: null, helperVerified: false, needsManualCheck: true, busy: true } })))
+  const mounted = harness.render(harness.panelComponent)
+  await flush()
+  const tree = harness.render(harness.panelComponent, mounted.hook).tree
+  assert.match(textContent(tree), /no readable start time/u, '4B-14: an op with an unreadable start time explains itself instead of looking busy')
+  assert.match(textContent(tree), /restart record has no readable start time/iu)
+  harness.unmount(mounted.hook)
+  const normal = makeHarness(async () => reply(200, statusBody('off', { restartOp: { id: 'ok-1', phase: 'verify', result: 'pending', stages: {}, ageMs: 1000, needsManualCheck: false, busy: true } })))
+  const normalMount = normal.render(normal.panelComponent)
+  await flush()
+  const normalTree = normal.render(normal.panelComponent, normalMount.hook).tree
+  assert.doesNotMatch(textContent(normalTree), /no readable start time/u, '4B-14: a normal running op does not show the manual-check line')
+  normal.unmount(normalMount.hook)
+  passed += 1
+  console.log(`ok ${passed} - 4B-14 an unreadable start time is surfaced as needing a manual check, normal pending is not`)
+}
+
 if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '3') {
   let finish, cancelled=false
   const partial={at:'2026-10-24T00:00:00Z',scanned:2,removed:0,partial:true,candidateCount:1,candidateBytes:10}
