@@ -846,6 +846,54 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '2') {
   console.log(`ok ${passed} - 4B-2 unread diagnosis is visible, expandable and explicitly read without unlocking`)
 }
 
+if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '8') {
+  // 2026-11-03 用户复现：重启成功后，上一次「结果未知」的红字一直挂在面板上，
+  // 手点「标记已读」之外没有任何自愈通路（页面空闲时不轮询）。
+  let acknowledged = false, reads = 0
+  const diagnostic = () => ({id:'notice-stale',summary:'宿主或重启客户端尚未确认恢复（ready-unconfirmed）',reason:'ready-unconfirmed',unread:!acknowledged,at:'2026-11-03T06:39:02.739Z',details:{reason:'ready-unconfirmed',stages:{ready:0}},delivery:{status:'pending',code:'visibility-unconfirmed'}})
+  const harness = makeHarness(async () => { reads += 1; return reply(200, statusBody('off', {notifications:{items:[diagnostic()],error:null}})) })
+  const mounted = harness.render(harness.panelComponent)
+  await flush()
+  let tree = harness.render(harness.panelComponent, mounted.hook).tree
+  assert.ok(buttonWithText(tree, 'Mark as read'), '4B-8: an unread diagnostic is visible after mount')
+  assert.deepEqual(harness.timerDelays(), [5000], '4B-8: an idle panel keeps exactly one slow poll while a diagnostic is unread')
+  const beforePoll = reads
+  acknowledged = true
+  harness.fireTimer(5000)
+  await flush()
+  tree = harness.render(harness.panelComponent, mounted.hook).tree
+  assert.equal(reads, beforePoll + 1, '4B-8: the slow poll re-reads status exactly once')
+  assert.equal(buttons(tree).some((button) => textContent(button) === 'Mark as read'), false, '4B-8: the closed diagnostic disappears without any manual refresh')
+  assert.match(textContent(tree), /Read diagnostics \(1\)/u, '4B-8: the closed diagnostic stays reachable as history')
+  assert.deepEqual(harness.timerDelays(), [], '4B-8: polling stops once nothing is unread')
+  harness.unmount(mounted.hook)
+  passed += 1
+  console.log(`ok ${passed} - 4B-8 an idle panel slowly re-reads status until the unread diagnostic is closed, then stops polling`)
+}
+
+if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '9') {
+  const unreadItem = {id:'notice-unread',summary:'重启结果不确定：见诊断信息（ready-unconfirmed）',reason:'ready-unconfirmed',unread:true,at:'2026-11-03T08:43:54.920Z',details:{reason:'ready-unconfirmed'},delivery:{status:'pending',code:'visibility-unconfirmed'}}
+  const readItem = {id:'notice-read',summary:'旧实例未能关闭（stop-failed）',reason:'stop-failed',unread:false,at:'2026-11-01T00:00:00.000Z',details:{reason:'stop-failed'},delivery:{status:'failed',code:'notifications-disabled'}}
+  const harness = makeHarness(async () => reply(200, statusBody('off', {notifications:{items:[unreadItem, readItem],error:null}})))
+  const mounted = harness.render(harness.panelComponent)
+  await flush()
+  let tree = harness.render(harness.panelComponent, mounted.hook).tree
+  const warn = walk(tree, (node) => node.type === 'section' && node.props.className === 'dshdr-panel-warn')
+  const history = walk(tree, (node) => node.type === 'section' && node.props.className === 'dshdr-panel-history')
+  assert.equal(warn.props.role, 'alert', '4B-9: the unread diagnostic keeps its alert role')
+  assert.equal(history.props.role, undefined, '4B-9: a read diagnostic is not announced as an alert')
+  assert.match(textContent(tree), /Read diagnostics \(1\)/u, '4B-9: history carries its own count')
+  harness.unmount(mounted.hook)
+  const quiet = makeHarness(async () => reply(200, statusBody('off', {notifications:{items:[readItem],error:null}})))
+  const quietMount = quiet.render(quiet.panelComponent)
+  await flush()
+  tree = quiet.render(quiet.panelComponent, quietMount.hook).tree
+  assert.deepEqual(quiet.timerDelays(), [], '4B-9: read-only history must not keep a poll alive')
+  quiet.unmount(quietMount.hook)
+  passed += 1
+  console.log(`ok ${passed} - 4B-9 read diagnostics render as quiet history while unread ones stay alerts`)
+}
+
 if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '3') {
   let finish, cancelled=false
   const partial={at:'2026-10-24T00:00:00Z',scanned:2,removed:0,partial:true,candidateCount:1,candidateBytes:10}

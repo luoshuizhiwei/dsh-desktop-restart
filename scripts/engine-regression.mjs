@@ -460,6 +460,38 @@ if (!process.env.DSHDR4C_CASE || process.env.DSHDR4C_CASE === 'A') {
     console.log('PASS 4C-A 60 read + 3 unread -> 50 read + 3 unread; four-file retirement; partial deletion tolerated; unread protected')
   } finally {rmSync(dir,{recursive:true,force:true})}
 }
+
+if (!process.env.DSHDR4C_CASE || process.env.DSHDR4C_CASE === 'D') {
+  const {createNoticeStore}=createRequire(import.meta.url)('../lib/helper.cjs')
+  const dir=mkdtempSync(join(tmpdir(),'dshdr4c-supersede-'))
+  const profileId='supersede-fixture', prefix='notice-'+profileId+'-'
+  const seed=(name,at)=>{
+    const id=prefix+name+'-unknown'
+    writeFileSync(join(dir,id+'.json'),JSON.stringify({schema:1,id,profileId,result:'unknown',reason:'ready-unconfirmed',summary:'fixture',at,details:{reason:'ready-unconfirmed'}}))
+    writeFileSync(join(dir,id+'.html'),'fixture diagnostic')
+    return id
+  }
+  try {
+    const older=seed('older',new Date(Date.UTC(2026,10,3,6,39,2)).toISOString())
+    const newer=seed('newer',new Date(Date.UTC(2026,10,3,8,43,54)).toISOString())
+    const store=createNoticeStore({dir,profileId,send(){throw new Error('no real notifications')}})
+    assert.equal(store.list().filter(n=>n.unread).length,2,'both diagnostics start unread')
+    const boundary=new Date(Date.UTC(2026,10,3,7,0,0)).toISOString()
+    assert.equal(store.supersede(boundary,'restart-ok-1'),1,'only the diagnostic older than the confirmed restart is closed')
+    let records=store.list()
+    assert.deepEqual(records.filter(n=>n.unread).map(n=>n.id),[newer],'a later unanswered diagnostic stays unread')
+    const marker=JSON.parse(readFileSync(join(dir,older+'.read'),'utf8'))
+    assert.equal(marker.auto,true,'automatic closure must say so in the marker')
+    assert.equal(marker.supersededBy,'restart-ok-1')
+    assert.equal(records.find(n=>n.id===older).unread,false)
+    assert.equal(store.supersede(boundary,'restart-ok-1'),0,'closing twice writes nothing new')
+    assert.equal(store.supersede(new Date(Date.UTC(2026,10,3,9,0,0)).toISOString(),'restart-ok-2'),1,'a later confirmed restart closes the remaining older one')
+    assert.equal(store.list().filter(n=>n.unread).length,0)
+    assert.equal(store.supersede(undefined,'restart-ok-3'),0,'a missing boundary closes nothing')
+    assert.equal(store.supersede(boundary,'bad id!'),0,'an unsafe operation id is refused')
+    console.log('PASS 4C-D a confirmed restart closes only older unread diagnostics; boundary and id guards hold')
+  } finally {rmSync(dir,{recursive:true,force:true})}
+}
 console.log(JSON.stringify({
   helper: {
     sameExeOtherProfileKilled: sameExeOtherProfile.killed,

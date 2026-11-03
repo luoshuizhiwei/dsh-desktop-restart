@@ -1053,6 +1053,40 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '2') {
   results.push({case:'4B-2 host unread/read does not clear lock',passed:true})
 }
 
+if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '10') {
+  // 2026-11-03：一次已确认成功的重启必须回答此前的「结果未知」，否则用户会在
+  // 成功之后看到上一次的「请手动核对」——宿主侧这条通路只能在这里验证。
+  const id='supersede-confirmed-ok'
+  const now=Date.now()
+  const olderId=`notice-${profileId}-older-unknown`
+  const newerId=`notice-${profileId}-newer-unknown`
+  const noticeBody=(noticeId,at)=>JSON.stringify({schema:1,id:noticeId,profileId,result:'unknown',reason:'ready-unconfirmed',summary:'fixture',at,details:{reason:'ready-unconfirmed'}})
+  files.set(markerPath,JSON.stringify(makeMarker(id)))
+  files.set(`${stateDir}\\op-${id}.json`,JSON.stringify({schema:1,id,phase:'done',result:'ok',reason:null,profileId,hostPid:200,pid:901,startedAt:new Date(now-600000).toISOString(),updatedAt:new Date(now-590000).toISOString(),stages:{}}))
+  files.set(`${stateDir}\\${olderId}.json`,noticeBody(olderId,new Date(now-3600000).toISOString()))
+  files.set(`${stateDir}\\${newerId}.json`,noticeBody(newerId,new Date(now-60000).toISOString()))
+  const host=await boot({restartId:id})
+  const statusOf=async()=>(await host.request('/dsh-desktop-restart/api/status','GET','/dsh-desktop-restart/api/status')).body
+  const status=await statusOf()
+  assert.equal(status.restartOp.result,'ok','4B-10: the fixture restart is a confirmed success')
+  const items=status.notifications.items
+  assert.equal(items.find(n=>n.id===olderId).unread,false,'4B-10: a confirmed restart closes the older unread diagnosis')
+  assert.equal(items.find(n=>n.id===newerId).unread,true,'4B-10: a diagnosis newer than the success is untouched')
+  assert.ok(items.find(n=>n.id===olderId).details,'4B-10: the closed diagnosis keeps its evidence')
+  const marker=JSON.parse(files.get(`${stateDir}\\${olderId}.read`))
+  assert.equal(marker.auto,true,'4B-10: the closure says it was automatic')
+  assert.equal(marker.supersededBy,id)
+  const again=await statusOf()
+  assert.equal(again.notifications.items.find(n=>n.id===olderId).unread,false,'4B-10: repeated status reads stay idempotent')
+  assert.equal(again.notifications.items.find(n=>n.id===newerId).unread,true)
+  for(const dispose of host.disposers)dispose()
+  for (const name of [olderId,newerId]) for (const suffix of ['json','read','html','delivery']) files.delete(`${stateDir}\\${name}.${suffix}`)
+  files.delete(markerPath)
+  files.delete(`${stateDir}\\op-${id}.json`)
+  console.log('PASS 4B-10 confirmed restart closes older diagnostics; the newer one stays unread')
+  results.push({case:'4B-10 confirmed restart supersedes older unread diagnostics only',passed:true})
+}
+
 if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '3') {
   for (const action of ['cancelSweep=1','restart']) {
     let control, finish, count=0
