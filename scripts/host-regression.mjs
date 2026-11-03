@@ -361,6 +361,77 @@ assert.equal(missingParentStatus.body.restartOp.helperVerified, false)
 assert.equal(missingParentStatus.body.restartOp.busy, true)
 results.push({ case: 'missing-helper-parent-identity-cannot-prove-exit', passed: true })
 
+// ── 2026-11-03 issue #5：身份证据拿不到时的长期卡死必须能自动回收 ───────────
+//
+// 真机 11-03 的现场：记录停在 unknown/ready-unconfirmed，helper 进程早已退出，
+// 但下次身份查询拿不到 verified 证据（进程表里没有它 → verified===false），
+// 于是 busy 永远 true，标题栏与所有入口全部点不动。
+{
+  const stuckId = 'stuck-unknown-reclaimable'
+  // 身份**不完整**（createdAt 非法）：helperProcessState 只能给出
+  // alive=null / verified=false —— 这正是真机卡死的形态。用完整身份会让
+  // 旧代码走 helper-exited 路径自己解锁，就测不到新回收通道了。
+  const stuckHelper = { pid: 791, parentPid: 200, path: exe, commandLine: 'helper.cjs', createdAt: 'not-a-date' }
+  // 操作发生在 3 小时前（远超 30 分钟回收时限），新宿主 792 仍活着，helper 791 已不在表里。
+  const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000).toISOString()
+  files.set(missingRestart.module.namespace.__test.opFileOf(stuckId), JSON.stringify({
+    id: stuckId, schema: 1, phase: 'unknown', result: 'unknown', reason: 'ready-unconfirmed',
+    pid: stuckHelper.pid, hostPid: stuckHelper.parentPid, helperIdentity: stuckHelper,
+    startedAt: threeHoursAgo, stages: {}, readyHostPid: 792,
+  }))
+  const reclaimHost = await boot({
+    restartId: stuckId,
+    processList: [{ pid: 792, parentPid: 1, path: exe, commandLine: '"app.exe" --expose-internals', createdAt: threeHoursAgo }],
+  })
+  const reclaimStatus = await reclaimHost.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+  assert.equal(reclaimStatus.body.restartOp.busy, false, 'issue #5: 超时且新实例存活、helper 不在表里时必须解锁')
+  assert.equal(reclaimStatus.body.restartOp.result, 'unknown', 'issue #5: 回收后仍如实报告结果未知')
+  const reclaimRetry = await reclaimHost.request('/dsh-desktop-restart/api/restart', 'POST', '/dsh-desktop-restart/api/restart')
+  assert.notEqual(reclaimRetry.status, 409, 'issue #5: 解锁后重启请求不应再被 busy 挡回 409')
+  results.push({ case: 'issue5-stuck-unknown-reclaimed-after-deadline', passed: true })
+}
+{
+  // 同样卡着，但才过了 5 分钟 —— 不到回收时限，必须继续锁。
+  // 注意：这里必须让「身份不可验证」成立（helperIdentity 不完整 → alive=null,
+  // verified=false），否则会走原有的 helper-exited 路径直接解锁，测不到回收时限。
+  const earlyId = 'stuck-unknown-too-early'
+  const earlyIdentity = { pid: 793, parentPid: 200, path: exe, commandLine: 'helper.cjs', createdAt: 'not-a-date' }
+  files.set(missingRestart.module.namespace.__test.opFileOf(earlyId), JSON.stringify({
+    id: earlyId, schema: 1, phase: 'unknown', result: 'unknown', reason: 'ready-unconfirmed',
+    pid: earlyIdentity.pid, hostPid: earlyIdentity.parentPid, helperIdentity: earlyIdentity,
+    startedAt: new Date(Date.now() - 5 * 60_000).toISOString(), stages: {}, readyHostPid: 794,
+  }))
+  const earlyHost = await boot({
+    restartId: earlyId,
+    processList: [{ pid: 794, parentPid: 1, path: exe, commandLine: '"app.exe" --expose-internals', createdAt: new Date(Date.now() - 5 * 60_000).toISOString() }],
+  })
+  const earlyStatus = await earlyHost.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+  assert.equal(earlyStatus.body.restartOp.busy, true, 'issue #5: 未到回收时限不得解锁')
+  results.push({ case: 'issue5-before-deadline-stays-locked', passed: true })
+}
+{
+  // helper 仍在进程表里 —— 可能是另一个操作还在跑，绝不能回收。
+  // 身份用不完整形式，确保走回收判定而非 helper-exited 路径。
+  const busyHelperId = 'stuck-unknown-helper-still-alive'
+  const liveHelper = { pid: 795, parentPid: 200, path: exe, commandLine: 'helper.cjs', createdAt: 'not-a-date' }
+  const longAgo = new Date(Date.now() - 3 * 60 * 60_000).toISOString()
+  files.set(missingRestart.module.namespace.__test.opFileOf(busyHelperId), JSON.stringify({
+    id: busyHelperId, schema: 1, phase: 'unknown', result: 'unknown', reason: 'ready-unconfirmed',
+    pid: liveHelper.pid, hostPid: liveHelper.parentPid, helperIdentity: liveHelper,
+    startedAt: longAgo, stages: {}, readyHostPid: 796,
+  }))
+  const busyHelperHost = await boot({
+    restartId: busyHelperId,
+    processList: [
+      { ...liveHelper },
+      { pid: 796, parentPid: 1, path: exe, commandLine: '"app.exe" --expose-internals', createdAt: longAgo },
+    ],
+  })
+  const busyHelperStatus = await busyHelperHost.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+  assert.equal(busyHelperStatus.body.restartOp.busy, true, 'issue #5: helper 仍在进程表里时不得回收')
+  results.push({ case: 'issue5-live-helper-stays-locked', passed: true })
+}
+
 const incompleteActualId = 'incomplete-current-helper-row'
 const incompleteActualIdentity = { ...reusedIdentity, pid: 783 }
 files.set(missingRestart.module.namespace.__test.opFileOf(incompleteActualId), JSON.stringify({

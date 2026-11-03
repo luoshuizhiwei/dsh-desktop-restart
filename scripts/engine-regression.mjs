@@ -17,7 +17,7 @@ function makeProcess(pid, parentPid, path, createdAt, commandLine = 'app.exe') {
   return { pid, parentPid, path, createdAt: new Date(createdAt).toISOString(), commandLine }
 }
 
-function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failLaunchWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false }) {
+function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failLaunchWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false, newHostListener = true }) {
   let clock = Date.now()
   const main = makeProcess(100, 1, targetExe, clock - 20_000, '"C:\\DSH\\app.exe" --user-data-dir=C:\\profile-A')
   const host = makeProcess(101, 100, targetExe, clock - 15_000, '"C:\\DSH\\app.exe" --expose-internals')
@@ -86,6 +86,9 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
           if(acknowledgeRecovery) {
             const previous=JSON.parse(operationFiles.get(opPath))
             operationFiles.set(opPath,JSON.stringify({...previous,profileId:'engine-fixture',readyHostPid:301,hostReadyAt:new Date(launchedAt).toISOString(),clientReadyAt:new Date(launchedAt).toISOString()}))
+            // 2026-11-03 issue #4：回执齐全但 netstat 里查不到新宿主监听项
+            //（真机 06:38 那次：hostReadyPid 活着、clientReadyAt 有值、readyPort 空）。
+            if (!newHostListener) listeners.delete(19001)
           }
         }
         return { pid: 300, on() { return this }, unref() {} }
@@ -247,6 +250,16 @@ assert.equal(newHostReady.launchEnvs[0].ELECTRON_RUN_AS_NODE, undefined, 'Node m
 const listenerWithoutReceipt=await runHelperScenario({foreignListener:false,startNewHost:true,acknowledgeRecovery:false})
 assert.equal(listenerWithoutReceipt.operation.result,'unknown')
 assert.equal(listenerWithoutReceipt.operation.reason,'ready-unconfirmed','an inspector-only listener is not success')
+
+// 2026-11-03 issue #4：真机 06:38 那次重启成功，但 netstat 里没匹配到新宿主的
+// 监听项，旧逻辑等到超时判 unknown/ready-unconfirmed，用户看到「结果未知」。
+// 回执（nonce + readyHostPid + 时间序）已经证明新宿主起来了、客户端连上了，
+// 端口只是佐证：缺端口应当判成功，并把「未取得端口」如实记进 reason。
+const readyWithoutPort = await runHelperScenario({ foreignListener: false, startNewHost: true, newHostListener: false })
+assert.equal(readyWithoutPort.operation.result, 'ok', 'issue #4: 回执齐全但缺端口时必须判成功，不能报未知')
+assert.equal(readyWithoutPort.operation.reason, 'ready-without-port', 'issue #4: 缺端口要如实记录原因码')
+assert.equal(readyWithoutPort.operation.readyPort, null, 'issue #4: 不得伪造 readyPort')
+assert(readyWithoutPort.notes.some((line) => line.includes('restart complete without a port')), 'issue #4: 日志要说明「完成但无端口」')
 const exitedBeforeKill=await runHelperScenario({foreignListener:false,startNewHost:true,disappearBeforeKill:true})
 assert.equal(exitedBeforeKill.operation.result,'ok')
 assert.ok(!exitedBeforeKill.killed.includes(100),'an already-exited main does not require taskkill')

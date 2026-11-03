@@ -7,8 +7,15 @@ export function accountMenuDOM(scenario = 'normal') {
   const insertEvents = []
   let body
   function matches(node, selector) {
+    // 2026-11-03 issue #3：补上类选择器。此前完全忽略 `.foo`，导致
+    // `querySelector('.dsh-claude-account-inject')` 会匹配到任何节点 ——
+    // 「皮肤容器在不在」这类判定在夹具里永远为真，测不出真实行为。
     const tag = selector.match(/^[a-z]+/iu)?.[0]
     if (tag && tag !== node.tagName) return false
+    for (const cls of selector.matchAll(/\.([\w-]+)/gu)) {
+      const owned = String(node.className ?? '').split(/\s+/u).filter(Boolean)
+      if (!owned.includes(cls[1])) return false
+    }
     for (const match of selector.matchAll(/\[([^\]=]+)(?:="([^"]*)")?\]/gu)) {
       if (!node.attributes.has(match[1])) return false
       if (match[2] !== undefined && node.getAttribute(match[1]) !== match[2]) return false

@@ -1240,7 +1240,9 @@ await ok('client bundle：状态色用官方 token 名（warn，不是 warning�
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   sourceTextChecks.match("T021", source, /data-phase=warn\]\{color:var\(--dsw-alias-state-warn-primary/u, '会打断工作用官方的 warn 色')
   sourceTextChecks.match("T022", source, /data-phase=error\]\{color:var\(--dsw-alias-state-error-primary/u, '失败才是红色')
-  sourceTextChecks.match("T023", source, /data-phase=confirm\]\{color:var\(--dsw-alias-label-primary/u, '普通确认只做中性强调')
+  // T023 于 2026-11-03 随 issue #3 改向：confirm 原为中性 label-primary，
+  // 用户余光看不出文字变化，报「点了没反应」。改为与 warn 共用的危险色。
+  sourceTextChecks.match("T023", source, /data-phase=confirm\]\{color:var\(--dsw-alias-state-error-primary/u, '普通确认要给可见的颜色信号（issue #3）')
   sourceTextChecks.ok("T105", !source.includes('--dsw-alias-state-warning-primary'), '官方没有 state-warning-primary 这个 token')
   sourceTextChecks.ok("T106", !source.includes('--dsw-alias-interactive-bg-hover-warning'), '这个 token 也不存在，别自造')
   sourceTextChecks.match("T024", source, /:active:not\(:disabled\)\{background:var\(--dsw-alias-interactive-bg-active/u, '按下态用官方 active token')
