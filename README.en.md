@@ -82,6 +82,19 @@ To be precise: that receipt proves the new app loaded this plugin. It does not m
 
 ---
 
+## When something goes wrong
+
+Occasionally a restart fails to finish cleanly (the old instance would not exit, the new one was not confirmed, or an intermediate record was touched by a disk cleaner or antivirus). The panel then explains the reason in one sentence and keeps a **redacted diagnostic** for troubleshooting:
+
+- **After a confirmed restart, earlier "unknown result" reminders are closed automatically** and fold into the collapsed "Read diagnostics" section — a success is the answer to the earlier question, so they stop glowing.
+- Reminders that were never answered stay until you press "Mark as read"; then they move into that history too.
+- If the panel says the **operation record is missing**: confirm the app window is fine, then press **"Verified — clear restart state"** on the panel to get the restart entries back. If clearing is refused, a restart is still in progress — wait a moment and retry.
+- If it says the **restart record has no readable start time**: the state may be stale. Check whether the window recovered; reopen the app if needed.
+
+These notices describe symptoms only and **never delete records automatically**; removing the matching read marker restores them (storage location in "Diagnostics and settings storage" below).
+
+---
+
 ## Bundled extras (each can be turned off)
 
 These three are unrelated to restarting; they ship along with this plugin.
@@ -259,7 +272,9 @@ A candidate must be a real directory with the expected prefix, created before th
 
 `POST /dsh-desktop-restart/api/prefs?countdown=<integer>` stores the next countdown (0–60); out-of-range or non-integer values return 400 and leave the previous value untouched.
 
-The client only mirrors host state over a single 2-second poll; the countdown display is derived from the host's `countdownUntil` plus a local one-second clock and never decides execution.
+`POST /dsh-desktop-restart/api/prefs?clearOp=1` clears one finished restart state (the panel's "Verified — clear restart state"). Only terminal states or a missing record are accepted; 409 while `restart.lock` is still held by a live process.
+
+The client only mirrors host state: it polls every 2 seconds while waiting/counting down/executing, and drops to every 5 seconds while the panel still shows an unread diagnostic; the countdown display is derived from the host's `countdownUntil` plus a local one-second clock and never decides execution.
 
 ## Security model
 
@@ -280,11 +295,13 @@ Host settings live in `desktop-restart/settings-<profileId>.json`, isolated by p
 
 Failures and unconfirmed results create one redacted diagnostic record per operation id and result class, and attempt a Windows toast. Without permission or confirmation the plugin still shows an unread reminder until it is explicitly marked read. Diagnostics never contain process paths, command lines or credentials.
 
+Once a restart is **acknowledged as recovered** by the new instance, the host marks earlier still-unread diagnostics as read automatically (the marker carries `auto` plus the closing restart id) and they fold into "Read diagnostics"; the records stay, and deleting the read marker restores them. When diagnostics pile up, only the oldest **read** records beyond the retention count are retired; unread records are never retired automatically.
+
 Cross-process restarts use `desktop-restart/restart.lock` (atomic creation plus stale-lock takeover) so two instances cannot end the same main process concurrently.
 
 ## Known limitations
 
-- Package version `0.4.6`.
+- Package version `0.4.7`.
 - Accepted on a real machine: the full restart chain (including downtime measurement and receipt), account-menu first-open injection, panel button states, log redaction.
 - Not yet accepted: screen readers, frame-by-frame absence of visual flicker, menu keyboard navigation, multi-window concurrency, per-theme and narrow-width pixel layout.
 - Offline tests cover the state machine, fail-safes, concurrency and isolated fixtures; passing `npm test` does not mean the real-machine items above are accepted.
