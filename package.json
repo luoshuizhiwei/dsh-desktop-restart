@@ -33,7 +33,7 @@
     "dsh": ">=0.2.0-rc.1"
   },
   "scripts": {
-    "test": "node scripts/smoke.mjs && node --experimental-vm-modules scripts/host-regression.mjs && node scripts/client-regression.mjs && node scripts/engine-regression.mjs && node scripts/opt02-regression.mjs && node scripts/boot-regression.mjs && node scripts/issue3-regression.mjs && node --experimental-vm-modules scripts/wallclock-countdown.mjs",
+    "test": "node scripts/smoke.mjs && node --experimental-vm-modules scripts/host-regression.mjs && node scripts/client-regression.mjs && node scripts/engine-regression.mjs && node scripts/opt02-regression.mjs && node scripts/boot-regression.mjs && node scripts/issue3-regression.mjs && node scripts/label-order-regression.mjs && node --experimental-vm-modules scripts/wallclock-countdown.mjs",
     "prepublishOnly": "npm test",
     "lint": "eslint ."
   },

@@ -17,7 +17,7 @@ function makeProcess(pid, parentPid, path, createdAt, commandLine = 'app.exe') {
   return { pid, parentPid, path, createdAt: new Date(createdAt).toISOString(), commandLine }
 }
 
-function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failLaunchWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false, newHostListener = true }) {
+function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failLaunchWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false, newHostListener = true, incompleteNewHostRow = false }) {
   let clock = Date.now()
   const main = makeProcess(100, 1, targetExe, clock - 20_000, '"C:\\DSH\\app.exe" --user-data-dir=C:\\profile-A')
   const host = makeProcess(101, 100, targetExe, clock - 15_000, '"C:\\DSH\\app.exe" --expose-internals')
@@ -72,6 +72,11 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
           CreatedAt: entry.createdAt,
         }))
         if (incompleteCim) delete result.find((entry) => entry.ProcessId === 102).CreatedAt
+        // 2026-11-03（回执晚到）：只让**新宿主**那一行不完整。整表按
+        // rows.every(processIdentityComplete) 作废 → 就绪轮询里永远建不出进程树，
+        // 于是「回执已落盘却读不到」被误报成结果未知 —— 正是真机第二次的形态。
+        // 动手前的 verify/stop 阶段新宿主还不存在，所以不影响前置流程。
+        if (incompleteNewHostRow) delete result.find((entry) => entry.ProcessId === 301)?.CreatedAt
         return JSON.stringify(result)
       }
       throw new Error(`Unexpected process command in fake: ${command}`)
@@ -263,6 +268,18 @@ assert(readyWithoutPort.notes.some((line) => line.includes('restart complete wit
 const exitedBeforeKill=await runHelperScenario({foreignListener:false,startNewHost:true,disappearBeforeKill:true})
 assert.equal(exitedBeforeKill.operation.result,'ok')
 assert.ok(!exitedBeforeKill.killed.includes(100),'an already-exited main does not require taskkill')
+
+// 2026-11-03 真机第二次：新宿主回执已经落盘，但轮询里因为进程表整表作废而
+// 建不出进程树 → 回执从来没被读到 → 判成结果未知（日志：判定 08:43:54.908，
+// clientReadyAt 08:43:54.461，只差 60ms）。关闸后必须补读一次回执。
+const lateReceipt = await runHelperScenario({
+  foreignListener: false,
+  startNewHost: true,
+  incompleteNewHostRow: true,
+})
+assert.equal(lateReceipt.operation.result, 'ok', '回执已在盘上、只是轮询读不到时必须判成功，不能报未知')
+assert.equal(lateReceipt.operation.reason, 'ready-without-port')
+assert(lateReceipt.notes.some((line) => line.includes('readiness receipt appeared after the wait window closed')), '日志要说明回执是关闸后补读到的')
 
 const operationWriteFailure = await runHelperScenario({ foreignListener: false, failOperationWrite: true })
 assert.deepEqual(operationWriteFailure.killed, [], 'helper refuses to stop processes when operation state cannot be persisted')
