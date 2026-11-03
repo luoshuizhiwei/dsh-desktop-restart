@@ -616,7 +616,10 @@ files.set(missingRestart.module.namespace.__test.opFileOf(cacheId), JSON.stringi
 const cachedHost = await boot({ restartId: cacheId, processList: cachedProcesses, clock: FixtureDate })
 await cachedHost.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
 fixtureNow += 2000
+// 2026-11-04 r2 采纳：空表是「查询静默失败」的形态，不算「helper 不在」的证据。
+// 表达「helper 真的退出了」要给一张**非空**但不含 helper 的表。
 cachedProcesses.length = 0
+cachedProcesses.push({ pid: 300, parentPid: 1, path: exe, commandLine: '"app.exe" --expose-internals', createdAt: new Date(fixtureNow).toISOString() })
 const cachedResponse = await cachedHost.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
 assert.equal(cachedHost.queryCount(), 1, 'one UI poll reuses the verified identity result')
 assert.equal(cachedResponse.body.restartBusy, true, 'a cached live helper cannot release the lock')
@@ -1143,6 +1146,37 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '12') {
   files.delete(`${stateDir}\\op-e5-corrupt.json`)
   console.log('PASS 4B-12 an op with an unreadable start time stays locked and asks for a manual check')
   results.push({case:'4B-12 unreadable startedAt flags needsManualCheck and stays locked',passed:true})
+}
+
+if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '15') {
+  // 2026-11-03 r2 审查建议 1（本轮采纳）：进程表「静默说谎」—— PowerShell 非终止
+  // 错误时 stdout 空、exit 0，查询返回空表，旧代码把它当「helper 不在」直接放行
+  // （r2 实验 D3 复现的 F 类唯一通道）。自检：表里连宿主主进程自己都没有，就不能
+  // 据此放行，交信号 0 后备；helper 真不在时信号 0 照常解锁，不产生新死锁。
+  const lieDir = `${home}\\profiles\\lying-table`
+  directories.add(lieDir); directories.add(lieDir + '\\node_modules'); files.set(lieDir + '\\package.json', '{}')
+  const lieIdentity = { pid: 555, parentPid: 200, path: exe, commandLine: 'helper.cjs', createdAt: '2026-10-22T00:00:00.000Z' }
+  const lieOp = () => JSON.stringify({
+    id: 'lying-table', schema: 1, phase: 'unknown', result: 'unknown', reason: 'timeout',
+    pid: lieIdentity.pid, hostPid: lieIdentity.parentPid, helperIdentity: lieIdentity,
+    startedAt: new Date(Date.now() - 660_000).toISOString(), stages: {},
+  })
+  files.delete(stateDir + '\\restart.lock')
+  files.set(`${stateDir}\\op-lying-table.json`, lieOp())
+  // 空表 + helper 进程仍在（fakeHelper 让信号 0 探活返回 present）→ 必须保持锁定。
+  const lying = await boot({ profile: lieDir, restartId: 'lying-table', processList: [], fakeHelper: true })
+  const lyingBody = (await lying.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')).body
+  assert.equal(lyingBody.restartOp.busy, true, '4B-15: a process table that cannot see the host itself must not release the lock')
+  for (const dispose of lying.disposers) dispose()
+  // 同一张空表 + helper 进程确实不在（deadLockPid → ESRCH）→ 信号 0 照常放行。
+  files.set(`${stateDir}\\op-lying-table.json`, lieOp())
+  const honest = await boot({ profile: lieDir, restartId: 'lying-table', processList: [], fakeHelper: true, deadLockPid: 555 })
+  const honestBody = (await honest.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')).body
+  assert.equal(honestBody.restartOp.busy, false, '4B-15: the signal-0 fallback still releases when the helper is truly gone')
+  for (const dispose of honest.disposers) dispose()
+  files.delete(`${stateDir}\\op-lying-table.json`)
+  console.log('PASS 4B-15 an empty process table is not evidence of absence; signal 0 decides')
+  results.push({case:'4B-15 lying process table falls back to signal 0',passed:true})
 }
 
 if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '3') {
