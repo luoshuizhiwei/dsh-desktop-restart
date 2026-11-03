@@ -300,10 +300,13 @@ assert.equal(missingStatus.body.restartOp.helperVerified, false)
 assert.equal(missingStatus.body.restartOp.needsManualCheck, true)
 const missingDuplicate = await missingRestart.request('/dsh-desktop-restart/api/restart', 'POST', '/dsh-desktop-restart/api/restart')
 assert.equal(missingDuplicate.status, 409)
+// 2026-11-03 独立审查方案三：record-missing 开放人工出口。
+// 记录读不出来时任何自动判定都缺依据，用户是唯一能核对现场的人；该路由与
+// /api/restart 同一信任级别，不新增攻击面。restart.lock 无活持有者即放行。
 const missingClear = await missingRestart.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?clearOp=1')
-assert.equal(missingClear.status, 409)
-assert.equal(missingClear.body.cleared, false)
-results.push({ case: 'missing-op-remains-locked-and-cannot-be-cleared', passed: true })
+assert.equal(missingClear.status, 200, 'record-missing 必须可被人工清除（否则只能重启应用）')
+assert.equal(missingClear.body.cleared, true)
+results.push({ case: 'missing-op-can-be-cleared-manually', passed: true })
 
 const reusedPidId = 'reused-helper-pid'
 const reusedIdentity = { pid: 777, parentPid: 200, path: exe, commandLine: 'helper.cjs', createdAt: '2026-10-22T00:00:00.000Z' }
@@ -430,6 +433,96 @@ results.push({ case: 'missing-helper-parent-identity-cannot-prove-exit', passed:
   const busyHelperStatus = await busyHelperHost.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
   assert.equal(busyHelperStatus.body.restartOp.busy, true, 'issue #5: helper 仍在进程表里时不得回收')
   results.push({ case: 'issue5-live-helper-stays-locked', passed: true })
+}
+
+// ── 2026-11-03 独立审查：三条补充路径（P0/P1）──────────────────────────────
+//
+// 真机 11-03 事故的形态：回执齐全（readyHostPid 在），但进程表读不到
+// （火绒拦 PowerShell）→ alive 只能是 null → 永久 busy。此时 readyHostPid
+// 是否存根本不重要，缺的是「helper 还在不在」的另一条判据。
+{
+  const deadByProbeId = 'probe-esrch-reclaims'
+  const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000).toISOString()
+  files.set(missingRestart.module.namespace.__test.opFileOf(deadByProbeId), JSON.stringify({
+    id: deadByProbeId, schema: 1, phase: 'unknown', result: 'unknown', reason: 'ready-unconfirmed',
+    pid: 811, hostPid: 200,
+    helperIdentity: { pid: 811, parentPid: 200, path: exe, commandLine: 'helper.cjs', createdAt: 'not-a-date' },
+    startedAt: threeHoursAgo, stages: {},
+    // 注意：回执齐全（事故记录就是这样），但进程表读不到。
+    readyHostPid: 812, hostReadyAt: threeHoursAgo, clientReadyAt: threeHoursAgo,
+  }))
+  const deadByProbeHost = await boot({
+    restartId: deadByProbeId,
+    processQueryFails: true,   // 模拟火绒拦掉 PowerShell
+    deadLockPid: 811,          // 信号 0 探测 → ESRCH
+  })
+  const deadByProbeStatus = await deadByProbeHost.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+  assert.equal(deadByProbeStatus.body.restartOp.busy, false, 'P0: 进程表读不到时用信号 0 后备，ESRCH 必须解锁')
+  results.push({ case: 'p0-signal0-esrch-reclaims-without-process-table', passed: true })
+}
+{
+  // 反向：信号 0 探测成功（可能还活着）→ 必须保持锁定。
+  const aliveByProbeId = 'probe-present-keeps-locked'
+  const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000).toISOString()
+  files.set(missingRestart.module.namespace.__test.opFileOf(aliveByProbeId), JSON.stringify({
+    id: aliveByProbeId, schema: 1, phase: 'unknown', result: 'unknown', reason: 'ready-unconfirmed',
+    pid: 813, hostPid: 200,
+    helperIdentity: { pid: 813, parentPid: 200, path: exe, commandLine: 'helper.cjs', createdAt: 'not-a-date' },
+    startedAt: threeHoursAgo, stages: {}, readyHostPid: 814,
+  }))
+  const aliveByProbeHost = await boot({
+    restartId: aliveByProbeId,
+    processQueryFails: true,
+    fakeHelper: true,          // 信号 0 探测成功 = 该 pid 上有进程
+  })
+  const aliveByProbeStatus = await aliveByProbeHost.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+  assert.equal(aliveByProbeStatus.body.restartOp.busy, true, 'P0: 信号 0 探测成功时必须保持锁定（错向安全）')
+  results.push({ case: 'p0-signal0-present-stays-locked', passed: true })
+}
+{
+  // P1 子场景 (a)：helper 在第一次写记录之前就死了 → 记录里 pid 为 null。
+  // 依据 helper 的契约「第一笔写不进去就退出且不碰任何进程」，解锁无风险。
+  const pidNullId = 'pid-null-early-death'
+  const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000).toISOString()
+  files.set(missingRestart.module.namespace.__test.opFileOf(pidNullId), JSON.stringify({
+    id: pidNullId, schema: 1, phase: 'scheduled', result: 'pending',
+    pid: null, hostPid: 200, startedAt: threeHoursAgo, stages: {},
+  }))
+  const pidNullHost = await boot({ restartId: pidNullId, processList: [] })
+  const pidNullStatus = await pidNullHost.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+  assert.equal(pidNullStatus.body.restartOp.busy, false, 'P1: pid 从未写入且超龄时必须解锁')
+  results.push({ case: 'p1-pid-null-early-death-reclaims', passed: true })
+}
+{
+  // P1 子场景 (a) 反向：pid 为 null 但身份残留 → 数据异常，不回收。
+  const pidNullIdentityId = 'pid-null-with-identity'
+  const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000).toISOString()
+  files.set(missingRestart.module.namespace.__test.opFileOf(pidNullIdentityId), JSON.stringify({
+    id: pidNullIdentityId, schema: 1, phase: 'scheduled', result: 'pending',
+    pid: null, hostPid: 200, startedAt: threeHoursAgo, stages: {},
+    helperIdentity: { pid: 815, parentPid: 200, path: exe, commandLine: 'helper.cjs', createdAt: threeHoursAgo },
+  }))
+  const pidNullIdentityHost = await boot({ restartId: pidNullIdentityId, processList: [] })
+  const pidNullIdentityStatus = await pidNullIdentityHost.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+  assert.equal(pidNullIdentityStatus.body.restartOp.busy, true, 'P1: pid 缺失但身份残留属数据异常，不得回收')
+  results.push({ case: 'p1-pid-null-with-identity-stays-locked', passed: true })
+}
+{
+  // P1 子场景 (a) 旁证：restart.lock 里还有活着的持有者 → 可能有迟醒 helper，不回收。
+  const lockAliveId = 'pid-null-lock-alive'
+  const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000).toISOString()
+  files.set(missingRestart.module.namespace.__test.opFileOf(lockAliveId), JSON.stringify({
+    id: lockAliveId, schema: 1, phase: 'scheduled', result: 'pending',
+    pid: null, hostPid: 200, startedAt: threeHoursAgo, stages: {},
+  }))
+  files.set(stateDir + '\\restart.lock', JSON.stringify({ pid: 816, at: threeHoursAgo, token: lockAliveId }))
+  const lockAliveHost = await boot({ restartId: lockAliveId, processList: [], fakeHelper: true })
+  const lockAliveStatus = await lockAliveHost.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+  assert.equal(lockAliveStatus.body.restartOp.busy, true, 'P1: 重启锁仍被活进程持有时不得回收')
+  // 这条用例故意写了一个 pid 816 的锁（夹具的自动清理只认 200/901），必须自己收尾，
+  // 否则会污染后面所有涉及跨实例锁的用例。
+  files.delete(stateDir + '\\restart.lock')
+  results.push({ case: 'p1-pid-null-live-lock-stays-locked', passed: true })
 }
 
 const incompleteActualId = 'incomplete-current-helper-row'
