@@ -1089,6 +1089,14 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '10') {
     '4B-10: host must resolve the custom profile dir (settings files seen: '+settingsNames.join(', ')+')')
   assert.equal(status.restartOp.result,'ok','4B-10: the fixture restart is a confirmed success')
   const items=status.notifications.items
+  // 决定性诊断：把「实际存在的文件键」和「宿主返回的列表」并排打出来，
+  // 一眼能分辨是文件没了（被回收）还是被过滤掉了（身份/前缀不符）。
+  console.log('4B-10 DIAG', JSON.stringify({
+    seededKeys:[...files.keys()].filter(k=>k.includes('older-unknown')||k.includes('newer-unknown')),
+    items:items.map(n=>n.id),
+    profile:d10Profile,
+    dir:d10Dir,
+  }))
   // 先钉住「列表本身没出错、两条预置诊断都在」——否则后面的断言只会报
   // 「undefined 读不到 unread」，看不出是列表空了还是被过滤/回收了。
   assert.equal(status.notifications.error, null, '4B-10: diagnostics list must not error')
