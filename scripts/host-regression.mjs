@@ -78,34 +78,40 @@ async function boot({ hostCode = code, noticeFactory = createNoticeStore, notice
     await mod.evaluate()
     return mod
   }
+  // 假文件系统一律以 Windows 反斜杠为键。但 lib/helper.cjs 在测试里是用**真实**
+  // node:path 加载的（不是 VM 里的 path.win32），Linux 上它会把路径拼成 POSIX
+  // 形式 —— 同一个文件就变成两个键，读不到。所有入口统一归一化，夹具才真正
+  // 跨平台（Windows 上 norm 是恒等变换，行为不变）。
+  const winPath = (value) => String(value).replaceAll('/', '\\')
   const fsFake = {
     readFileSync(file) {
-      const key = String(file)
+      const key = winPath(file)
       if (key.endsWith('package.json')) return '{"version":"0.4.5"}'
       if (!files.has(key)) { const error = new Error('ENOENT'); error.code = 'ENOENT'; throw error }
       return files.get(key)
     },
-    existsSync: (file) => directories.has(String(file)) || files.has(String(file)),
+    existsSync: (file) => directories.has(winPath(file)) || files.has(winPath(file)),
     mkdirSync() {},
-    readdirSync: dir => [...files.keys()].filter(file => path.win32.dirname(file) === String(dir)).map(file => path.win32.basename(file)),
-    statSync(file) { if (directories.has(String(file)) || String(file) === stateDir) return { isDirectory: () => true, mtimeMs:files.size,ctimeMs:files.size,size:0 }; if(files.has(String(file))) return {isDirectory:()=>false,mtimeMs:parseInt(createHash('sha256').update(files.get(String(file))).digest('hex').slice(0,12),16),size:Buffer.byteLength(files.get(String(file)))}; const error = new Error('ENOENT'); error.code = 'ENOENT'; throw error },
-    unlinkSync(file) { files.delete(String(file)) },
+    readdirSync: dir => [...files.keys()].filter(file => path.win32.dirname(file) === winPath(dir)).map(file => path.win32.basename(file)),
+    statSync(file) { const key = winPath(file); if (directories.has(key) || key === stateDir) return { isDirectory: () => true, mtimeMs:files.size,ctimeMs:files.size,size:0 }; if(files.has(key)) return {isDirectory:()=>false,mtimeMs:parseInt(createHash('sha256').update(files.get(key)).digest('hex').slice(0,12),16),size:Buffer.byteLength(files.get(key))}; const error = new Error('ENOENT'); error.code = 'ENOENT'; throw error },
+    unlinkSync(file) { files.delete(winPath(file)) },
     openSync(file, flag) {
-      if (flag === 'wx' && files.has(String(file))) { const error = new Error('EEXIST'); error.code = 'EEXIST'; throw error }
+      const key = winPath(file)
+      if (flag === 'wx' && files.has(key)) { const error = new Error('EEXIST'); error.code = 'EEXIST'; throw error }
       const fd = nextFd++
-      descriptors.set(fd, String(file))
-      files.set(String(file), '')
+      descriptors.set(fd, key)
+      files.set(key, '')
       return fd
     },
     closeSync() {},
     writeFileSync(fileOrFd, text, options) {
-      if (options?.flag === 'wx' && files.has(String(fileOrFd))) { const error = new Error('EEXIST'); error.code = 'EEXIST'; throw error }
-      if (failSettingsWrites && /settings(?:-[a-f0-9]+)?\.json\./u.test(String(fileOrFd))) throw new Error('simulated disk full')
-      if (failOpWrites && String(fileOrFd).includes('\\op-')) throw new Error('simulated operation-state disk failure')
-      const file = typeof fileOrFd === 'number' ? descriptors.get(fileOrFd) : String(fileOrFd)
-      files.set(file, String(text))
+      const raw = typeof fileOrFd === 'number' ? descriptors.get(fileOrFd) : winPath(fileOrFd)
+      if (options?.flag === 'wx' && files.has(raw)) { const error = new Error('EEXIST'); error.code = 'EEXIST'; throw error }
+      if (failSettingsWrites && /settings(?:-[a-f0-9]+)?\.json\./u.test(String(raw))) throw new Error('simulated disk full')
+      if (failOpWrites && String(raw).includes('\\op-')) throw new Error('simulated operation-state disk failure')
+      files.set(raw, String(text))
     },
-    renameSync(from, to) { files.set(String(to), files.get(String(from))); files.delete(String(from)) },
+    renameSync(from, to) { files.set(winPath(to), files.get(winPath(from))); files.delete(winPath(from)) },
   }
   const pathApi = Object.fromEntries(['basename', 'dirname', 'join'].map((name) => [name, path.win32[name]]))
   const nodeModules = {
@@ -1089,14 +1095,6 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '10') {
     '4B-10: host must resolve the custom profile dir (settings files seen: '+settingsNames.join(', ')+')')
   assert.equal(status.restartOp.result,'ok','4B-10: the fixture restart is a confirmed success')
   const items=status.notifications.items
-  // 决定性诊断：把「实际存在的文件键」和「宿主返回的列表」并排打出来，
-  // 一眼能分辨是文件没了（被回收）还是被过滤掉了（身份/前缀不符）。
-  console.log('4B-10 DIAG', JSON.stringify({
-    seededKeys:[...files.keys()].filter(k=>k.includes('older-unknown')||k.includes('newer-unknown')),
-    items:items.map(n=>n.id),
-    profile:d10Profile,
-    dir:d10Dir,
-  }))
   // 先钉住「列表本身没出错、两条预置诊断都在」——否则后面的断言只会报
   // 「undefined 读不到 unread」，看不出是列表空了还是被过滤/回收了。
   assert.equal(status.notifications.error, null, '4B-10: diagnostics list must not error')
