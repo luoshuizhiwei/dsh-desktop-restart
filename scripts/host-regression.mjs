@@ -1073,6 +1073,11 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '10') {
   const status=await statusOf()
   assert.equal(status.restartOp.result,'ok','4B-10: the fixture restart is a confirmed success')
   const items=status.notifications.items
+  // 先钉住「列表本身没出错、两条预置诊断都在」——否则后面的断言只会报
+  // 「undefined 读不到 unread」，看不出到底是列表空了还是过滤掉了（CI 上
+  // 只有 Linux 复现过，必须留下可诊断的证据）。
+  assert.equal(status.notifications.error, null, '4B-10: diagnostics list must not error')
+  assert.deepEqual(items.map(n=>n.id).sort(), [newerId, olderId].sort(), '4B-10: both seeded diagnostics are listed')
   assert.equal(items.find(n=>n.id===olderId).unread,false,'4B-10: a confirmed restart closes the older unread diagnosis')
   assert.equal(items.find(n=>n.id===newerId).unread,true,'4B-10: a diagnosis newer than the success is untouched')
   assert.ok(items.find(n=>n.id===olderId).details,'4B-10: the closed diagnosis keeps its evidence')
