@@ -1059,25 +1059,34 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '2') {
 if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '10') {
   // 2026-11-03：一次已确认成功的重启必须回答此前的「结果未知」，否则用户会在
   // 成功之后看到上一次的「请手动核对」——宿主侧这条通路只能在这里验证。
+  //
+  // 用**独立 profile**：状态目录是全测试共享的，用默认 profile 会让别的用例留下的
+  // 几十条诊断混进列表；更致命的是 supersede 结案后会调 pruneRead()，而本用例
+  // 「更早那条」是最老的已读记录，超过 50 条保留上限会被当场回收 —— Linux CI 上
+  // 就是这样丢的（Windows 本地当时刚好没超限，所以一直绿）。独立 profile 的
+  // notice 前缀只匹配本用例，断言才能真正钉住行为。
   const id='supersede-confirmed-ok'
   const now=Date.now()
-  const olderId=`notice-${profileId}-older-unknown`
-  const newerId=`notice-${profileId}-newer-unknown`
-  const noticeBody=(noticeId,at)=>JSON.stringify({schema:1,id:noticeId,profileId,result:'unknown',reason:'ready-unconfirmed',summary:'fixture',at,details:{reason:'ready-unconfirmed'}})
-  files.set(markerPath,JSON.stringify(makeMarker(id)))
-  files.set(`${stateDir}\\op-${id}.json`,JSON.stringify({schema:1,id,phase:'done',result:'ok',reason:null,profileId,hostPid:200,pid:901,startedAt:new Date(now-600000).toISOString(),updatedAt:new Date(now-590000).toISOString(),stages:{}}))
+  const d10Dir=`${home}\\profiles\\supersede-ok`
+  directories.add(d10Dir); directories.add(d10Dir+'\\node_modules'); files.set(d10Dir+'\\package.json','{}')
+  const d10Profile=createHash('sha256').update(d10Dir.replaceAll('\\','/').toLowerCase()).digest('hex')
+  const olderId=`notice-${d10Profile}-older-unknown`
+  const newerId=`notice-${d10Profile}-newer-unknown`
+  const noticeBody=(noticeId,at)=>JSON.stringify({schema:1,id:noticeId,profileId:d10Profile,result:'unknown',reason:'ready-unconfirmed',summary:'fixture',at,details:{reason:'ready-unconfirmed'}})
+  const d10Marker=`${stateDir}\\last-restart-${d10Profile}.json`
+  files.set(d10Marker,JSON.stringify({schema:1,status:'pending',profileId:d10Profile,instanceId:'d10-instance',restartId:id,requestedAt:new Date(now-1000).toISOString(),sessions:[]}))
+  files.set(`${stateDir}\\op-${id}.json`,JSON.stringify({schema:1,id,phase:'done',result:'ok',reason:null,profileId:d10Profile,hostPid:200,pid:901,startedAt:new Date(now-600000).toISOString(),updatedAt:new Date(now-590000).toISOString(),stages:{}}))
   files.set(`${stateDir}\\${olderId}.json`,noticeBody(olderId,new Date(now-3600000).toISOString()))
   files.set(`${stateDir}\\${newerId}.json`,noticeBody(newerId,new Date(now-60000).toISOString()))
-  const host=await boot({restartId:id})
+  const host=await boot({profile:d10Dir,restartId:id})
   const statusOf=async()=>(await host.request('/dsh-desktop-restart/api/status','GET','/dsh-desktop-restart/api/status')).body
   const status=await statusOf()
   assert.equal(status.restartOp.result,'ok','4B-10: the fixture restart is a confirmed success')
   const items=status.notifications.items
   // 先钉住「列表本身没出错、两条预置诊断都在」——否则后面的断言只会报
-  // 「undefined 读不到 unread」，看不出到底是列表空了还是过滤掉了（CI 上
-  // 只有 Linux 复现过，必须留下可诊断的证据）。
+  // 「undefined 读不到 unread」，看不出是列表空了还是被过滤/回收了。
   assert.equal(status.notifications.error, null, '4B-10: diagnostics list must not error')
-  assert.deepEqual(items.map(n=>n.id).sort(), [newerId, olderId].sort(), '4B-10: both seeded diagnostics are listed')
+  assert.deepEqual(items.map(n=>n.id).sort(), [newerId, olderId].sort(), '4B-10: exactly the two seeded diagnostics are listed')
   assert.equal(items.find(n=>n.id===olderId).unread,false,'4B-10: a confirmed restart closes the older unread diagnosis')
   assert.equal(items.find(n=>n.id===newerId).unread,true,'4B-10: a diagnosis newer than the success is untouched')
   assert.ok(items.find(n=>n.id===olderId).details,'4B-10: the closed diagnosis keeps its evidence')
@@ -1089,7 +1098,7 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '10') {
   assert.equal(again.notifications.items.find(n=>n.id===newerId).unread,true)
   for(const dispose of host.disposers)dispose()
   for (const name of [olderId,newerId]) for (const suffix of ['json','read','html','delivery']) files.delete(`${stateDir}\\${name}.${suffix}`)
-  files.delete(markerPath)
+  files.delete(d10Marker)
   files.delete(`${stateDir}\\op-${id}.json`)
   console.log('PASS 4B-10 confirmed restart closes older diagnostics; the newer one stays unread')
   results.push({case:'4B-10 confirmed restart supersedes older unread diagnostics only',passed:true})
