@@ -1081,6 +1081,12 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '10') {
   const host=await boot({profile:d10Dir,restartId:id})
   const statusOf=async()=>(await host.request('/dsh-desktop-restart/api/status','GET','/dsh-desktop-restart/api/status')).body
   const status=await statusOf()
+  // 诊断：宿主到底把哪个目录当成 profile。settings 文件名由它自己的
+  // profileIdentity 决定，写一次设置就能把它「问」出来 —— 比猜路径规则可靠。
+  await host.request('/dsh-desktop-restart/api/prefs','POST','/dsh-desktop-restart/api/prefs?countdown=9')
+  const settingsNames=[...files.keys()].filter(k=>/settings-[0-9a-f]+\.json$/u.test(k)).map(k=>k.split(/[\\/]/u).pop()).sort()
+  assert.ok(settingsNames.includes(`settings-${d10Profile}.json`),
+    '4B-10: host must resolve the custom profile dir (settings files seen: '+settingsNames.join(', ')+')')
   assert.equal(status.restartOp.result,'ok','4B-10: the fixture restart is a confirmed success')
   const items=status.notifications.items
   // 先钉住「列表本身没出错、两条预置诊断都在」——否则后面的断言只会报
