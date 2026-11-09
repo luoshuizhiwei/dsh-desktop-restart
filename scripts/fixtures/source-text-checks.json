@@ -854,5 +854,85 @@
     "subject": "derived source structure",
     "assertion": "sourceTextChecks.ok(\"T107\", source.includes(token), `缺少与同座位占用者一致的 ${token}`)",
     "reason": "source structure check；保留为静态结构/常量兼容约束，不计为执行行为证据。"
+  },
+  {
+    "id": "T108",
+    "line": 1626,
+    "method": "match",
+    "subject": "derived source structure",
+    "assertion": "状态色要有 .18s 过渡",
+    "reason": "2026-11-06 流畅度：状态推进用 color 渐变而非硬闪；静态样式契约，文本检查不能证明浏览器渲染。"
+  },
+  {
+    "id": "T109",
+    "line": 1628,
+    "method": "match",
+    "subject": "derived source structure",
+    "assertion": "标题栏按钮按下要缩放",
+    "reason": "2026-11-06 流畅度：trigger 按下有 scale(.97) 手感；静态样式契约。"
+  },
+  {
+    "id": "T110",
+    "line": 1629,
+    "method": "match",
+    "subject": "derived source structure",
+    "assertion": "兜底按钮按下要缩放",
+    "reason": "2026-11-06 流畅度：btn 按下有 scale(.97) 手感；静态样式契约。"
+  },
+  {
+    "id": "T111",
+    "line": 1631,
+    "method": "match",
+    "subject": "derived source structure",
+    "assertion": "转圈用缓动而非匀速",
+    "reason": "2026-11-06 流畅度：spin 改 0.9s cubic-bezier；静态样式契约。"
+  },
+  {
+    "id": "T112",
+    "line": 1633,
+    "method": "match",
+    "subject": "derived source structure",
+    "assertion": "要有淡入+轻微上移的入场关键帧",
+    "reason": "2026-11-06 流畅度：dshdr-enter 关键帧；静态样式契约。"
+  },
+  {
+    "id": "T113",
+    "line": 1634,
+    "method": "match",
+    "subject": "derived source structure",
+    "assertion": "入场动画只给三块结果卡片",
+    "reason": "2026-11-06 流畅度：动画仅挂 warn/note/history；静态样式契约。"
+  },
+  {
+    "id": "T114",
+    "line": 1635,
+    "method": "ok",
+    "subject": "derived source structure",
+    "assertion": "整面板不许淡入淡出（状态刷新会变成持续闪烁）",
+    "reason": "2026-11-06 流畅度：整面板入场会导致刷新时持续闪烁；静态样式契约。"
+  },
+  {
+    "id": "T115",
+    "line": 1637,
+    "method": "match",
+    "subject": "derived source structure",
+    "assertion": "减效时卡片入场也要停",
+    "reason": "2026-11-06 流畅度：prefers-reduced-motion 下卡片入场停用；无障碍契约。"
+  },
+  {
+    "id": "T116",
+    "line": 1638,
+    "method": "match",
+    "subject": "derived source structure",
+    "assertion": "减效时所有过渡要停",
+    "reason": "2026-11-06 流畅度：prefers-reduced-motion 下新增过渡停用；无障碍契约。"
+  },
+  {
+    "id": "T117",
+    "line": 1639,
+    "method": "match",
+    "subject": "derived source structure",
+    "assertion": "减效时按下缩放要停",
+    "reason": "2026-11-06 流畅度：prefers-reduced-motion 下按下缩放停用；无障碍契约。"
   }
 ]

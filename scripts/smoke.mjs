@@ -20,10 +20,10 @@ import assert from 'node:assert/strict'
 import {forceContract,waitCancelContract,rollbackContract} from './critical-behavior.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
 
@@ -1623,6 +1623,26 @@ await ok('插件开关：清理结果要显眼 —— 独立一行、按结果�
   )
 })
 
+// 2026-11-06 流畅度：只加过渡与入场动画，不改状态机；护栏锁住"减效必停 + 不整面板淡入"。
+await ok('client bundle：流畅度动画有护栏（减少动效全停、只入场不退场、不碰整面板）', async () => {
+  const source = readFileSync(join(libDir, 'client.js'), 'utf8')
+  // 状态变色是渐变，不是硬闪。
+  sourceTextChecks.match("T108", source, /transition:color \.18s ease/u, '状态色要有 .18s 过渡', '状态推进用渐变而非硬闪')
+  // 按下反馈要真的存在（trigger / btn / foot-badge 三处）。
+  sourceTextChecks.match("T109", source, /\.dshdr-trigger:active:not\(:disabled\)\{[^}]*transform:scale\(\.97\)/u, '标题栏按钮按下要缩放', '按下手感')
+  sourceTextChecks.match("T110", source, /\.dshdr-btn:active:not\(:disabled\)\{transform:scale\(\.97\)\}/u, '兜底按钮按下要缩放', '按下手感')
+  // 转圈改成带缓动的 0.9s（保留 keyframes 名，T018/T087 已单独断言）。
+  sourceTextChecks.match("T111", source, /animation:dshdr-spin \.9s cubic-bezier\([^)]*\) infinite/u, '转圈用缓动而非匀速', '转圈观感')
+  // 入场关键帧 + 只挂在三类结果块上，绝不挂 .dshdr-panel 整面板（会持续闪烁）。
+  sourceTextChecks.match("T112", source, /@keyframes dshdr-enter\{from\{opacity:0;transform:translateY\(6px\)\}/u, '要有淡入+轻微上移的入场关键帧', '卡片入场')
+  sourceTextChecks.match("T113", source, /\.dshdr-panel-warn,\.dshdr-panel-note,\.dshdr-panel-history\{animation:dshdr-enter \.16s ease-out both\}/u, '入场动画只给三块结果卡片', '动画作用域')
+  sourceTextChecks.ok("T114", !/\.dshdr-panel\{[^}]*animation:/u.test(source), '整面板不许淡入淡出（状态刷新会变成持续闪烁）')
+  // 减少动效：新增的过渡 / 入场 / 按下缩放全部被 reduce 块收进去。
+  sourceTextChecks.match("T115", source, /prefers-reduced-motion:reduce\)\{[^@]*\.dshdr-panel-warn,\.dshdr-panel-note,\.dshdr-panel-history\{animation:none\}/u, '减效时卡片入场也要停', '无障碍')
+  sourceTextChecks.match("T116", source, /prefers-reduced-motion:reduce\)\{[^@]*transition:none/u, '减效时所有过渡要停', '无障碍')
+  sourceTextChecks.match("T117", source, /prefers-reduced-motion:reduce\)\{[^@]*transform:none\}/u, '减效时按下缩放要停', '无障碍')
+})
+
 await ok('顺手收拾界面：默认不动；明确开启后才藏，且不碰别的行', async () => {
   const source = readFileSync(join(libDir, 'client.js'), 'utf8')
   const react = {
@@ -1951,6 +1971,53 @@ await okWindows('helper：问不出进程表时拒绝，不盲杀或重拉', asy
   const log = readFileSync(logPath, 'utf8')
   assert.match(log, /refusing:.*could not prove/u, '读不到身份时必须如实拒绝')
   assert.doesNotMatch(log, /taskkill|relaunched/u, '身份不可验证时不能杀进程或重拉')
+})
+
+await ok('helper：拉起输出捕获——句柄保持打开时真 spawn 成功，子进程输出落进诊断日志（2026-11-08 事故机制·正确形态）', async () => {
+  // 真机 2026-11-08：拉起捕获把日志句柄先 closeSync 再传给 spawn，Windows 上必然
+  // EBADF。这条钉住「正确形态」——fd 保持打开（Node 官方 detached 示例同款），
+  // 子进程的 stdout/stderr 真的经继承句柄写进同一个诊断日志文件。
+  const dir = scratch('relaunchcapture')
+  const logPath = join(dir, 'diag.log')
+  const fd = openSync(logPath, 'a')
+  try {
+    const child = spawn(process.execPath, ['--eval', 'require("node:fs").writeSync(1, "captured-ok" + String.fromCharCode(10))'], {
+      detached: true,
+      stdio: ['ignore', fd, fd],
+      windowsHide: false,
+      cwd: dirname(process.execPath),
+    })
+    const code = await new Promise((resolve, reject) => { child.on('exit', resolve); child.on('error', reject) })
+    assert.equal(code, 0, '子进程应正常退出')
+    assert.ok(readFileSync(logPath, 'utf8').includes('captured-ok'), '子进程输出要落进诊断日志')
+  } finally {
+    try { closeSync(fd) } catch { /* 已关闭 */ }
+  }
+})
+
+await okWindows('helper：拉起输出捕获——句柄先关再传，Windows 上 spawn 必然同步抛 EBADF（2026-11-08 事故形态钉死）', async () => {
+  // 逐字复刻事故形态：openSync 后 closeSync，再把同一个 fd 数字传进 spawn 的
+  // stdio。libuv 按 fd 找底层句柄，已关闭 → 同步抛 EBADF，新实例从未被创建。
+  // 钉死「为什么先关再传是错的」，防止未来被无意改回去。
+  const dir = scratch('relaunchebadf')
+  const fd = openSync(join(dir, 'diag.log'), 'a')
+  closeSync(fd)
+  let thrown = null
+  try {
+    const child = spawn(process.execPath, ['--eval', 'process.exit(0)'], { detached: true, stdio: ['ignore', fd, fd], windowsHide: false })
+    child.on('error', () => {})
+    child.unref()
+  } catch (error) { thrown = error }
+  assert.ok(thrown, '句柄已关闭时 spawn 必须同步抛错')
+  assert.equal(thrown.code, 'EBADF', '抛的必须是 EBADF：' + String(thrown))
+})
+
+await ok('helper：源代码不得再出现 closeSync——先关句柄再 spawn 就是 2026-11-08 两次重启失败的全部根因', async () => {
+  // helper.cjs 里句柄只服务拉起捕获。VM 用例的 closeSync 是空操作、假 spawn 不校验
+  // fd，真机全链路用例又会被调试环境里「进程消亡 + CIM 查询」的冻结干扰（见
+  // 2026-11-09 交接），三者都拦不住回归 —— 源码护栏 + 上面两条机制钉死才是组合拳。
+  const source = readFileSync(helperPath, 'utf8')
+  assert.doesNotMatch(source, /closeSync/u, 'helper.cjs 不得调用 closeSync：日志句柄必须保持打开，helper 退出时由系统回收')
 })
 
 await ok('helper：命令行分词在引号内保留空格', async () => {

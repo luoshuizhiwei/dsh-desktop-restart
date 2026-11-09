@@ -17,7 +17,7 @@ function makeProcess(pid, parentPid, path, createdAt, commandLine = 'app.exe') {
   return { pid, parentPid, path, createdAt: new Date(createdAt).toISOString(), commandLine }
 }
 
-function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failLaunchWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false, newHostListener = true, incompleteNewHostRow = false }) {
+function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failLaunchWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false, newHostListener = true, incompleteNewHostRow = false, windowHandle = null, windowForeground = false, relaunchGoneAfterVerify = false, relaunchLogPath = '', relaunchSpawnThrows = false, relaunchAttempts = 1 }) {
   let clock = Date.now()
   const main = makeProcess(100, 1, targetExe, clock - 20_000, '"C:\\DSH\\app.exe" --user-data-dir=C:\\profile-A')
   const host = makeProcess(101, 100, targetExe, clock - 15_000, '"C:\\DSH\\app.exe" --expose-internals')
@@ -30,6 +30,11 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
   const noticesSent = []
   const notes = []
   const launchEnvs = []
+  const launchCalls = []
+  const openCalls = []
+  const closeCalls = []
+  let targetSpawnCalls = 0
+  const killCalls300 = { count: 0 }
   let cimReads=0
   const operationFiles = new Map()
   const opPath = 'C:\\virtual\\desktop-restart\\op-restart-test-123.json'
@@ -60,6 +65,17 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
         for (const [port, owner] of listeners) if (owner === pid) listeners.delete(port)
         return ''
       }
+      // 2026-11-07 窗口探测：helper 的 unknown 收尾会发一条带 MainWindowHandle 的
+      // 编码命令。默认（windowHandle === null）不拦截、让它落进 CIM 分支返回进程表
+      // —— 解析不出 handle，等价「问不出来」；显式传 windowHandle 才回窗口结果。
+      // 不递增 cimReads：这个调用不属于 CIM 身份查询，不能扰动 disappearBeforeKill
+      // 一类按第 N 次 CIM 读取触发的时序。
+      if (windowHandle !== null && (command === 'powershell.exe' || command === 'pwsh.exe')) {
+        const encoded = String(args[args.indexOf('-EncodedCommand') + 1] ?? '')
+        if (Buffer.from(encoded, 'base64').toString('utf16le').includes('MainWindowHandle')) {
+          return JSON.stringify({ handle: windowHandle, foreground: windowForeground })
+        }
+      }
       if (command === 'powershell.exe' || command === 'pwsh.exe') {
         cimReads++
         if(disappearBeforeKill && cimReads===3) processes.delete(100)
@@ -82,7 +98,11 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
       throw new Error(`Unexpected process command in fake: ${command}`)
     },
     spawn(command, args, options) {
+      launchCalls.push({ command, args, options })
       if (command === targetExe) {
+        targetSpawnCalls += 1
+        // 2026-11-08 事故回归：第一次拉起同步抛 EBADF（真机形态：stdio 句柄先关再传）。
+        if (relaunchSpawnThrows && targetSpawnCalls === 1) { throw Object.assign(new Error('bad file descriptor'), { code: 'EBADF' }) }
         launchEnvs.push(options.env)
         const launchedAt = clock
         processes.set(300, makeProcess(300, 1, targetExe, launchedAt, '"C:\\DSH\\app.exe" --user-data-dir=C:\\profile-A'))
@@ -108,6 +128,12 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
     argv: [],
     env: { ELECTRON_RUN_AS_NODE: '1', DSH_DESKTOP_RESTART_ID: 'old', ...(privateExe ? {DSH_DESKTOP_RESTART_EXE:targetExe} : {}) },
     kill(pid) {
+      // relaunchGoneAfterVerify：第 1 次 kill(300,0) 对应拉起确认（verifyMs 后仍活着），
+      // 第 2 次对应 unknown 收尾的下落核查 —— 让它在收尾时报告新实例已退出。
+      if (Number(pid) === 300 && relaunchGoneAfterVerify) {
+        killCalls300.count += 1
+        if (killCalls300.count >= 2) { const error = new Error('gone'); error.code = 'ESRCH'; throw error }
+      }
       if (!processes.has(pid)) { const error = new Error('gone'); error.code = 'ESRCH'; throw error }
     },
   }
@@ -155,6 +181,8 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
         operationFiles.set(String(file), String(text))
       },
       renameSync(from, to) { operationFiles.set(String(to), operationFiles.get(String(from))); operationFiles.delete(String(from)) },
+      openSync(file, flags) { openCalls.push({ file: String(file), flags: String(flags) }); return 77 },
+      closeSync(file) { closeCalls.push(String(file)) },
     }
     if (specifier === 'node:sqlite' && authCookieFailure) return {
       DatabaseSync:class {
@@ -193,7 +221,7 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
     port: handoffPort,
     opPath,
     delayMs: 1,
-    relaunchAttempts: 1,
+    relaunchAttempts,
     relaunchVerifyMs: 1,
     mainExitTimeoutMs: 2,
     portFreeTimeoutMs: 2,
@@ -209,10 +237,11 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
   if (legacyHandoff) delete handoff.opPath
   if (withLock) handoff.restartLock={path:lockPath,token:'restart-test-123'}
   if (privateExe) {handoff.exe=win32.basename(targetExe);handoff.exeFromEnv=true}
+  if (relaunchLogPath !== '') handoff.logPath = relaunchLogPath
   if (badHandoff) handoff.mainPid=0
   if (throwCore) handoff.mainPid={valueOf(){throw new Error('fixture unexpected core failure')}}
   let coreError=null
-  return helperApi.performRestart(handoff, (line) => notes.push(line)).catch(error=>{if(!throwCore)throw error;coreError=error.message}).then(() => ({ coreError, noticesSent, noticeRecords:[...operationFiles.entries()].filter(([file])=>win32.basename(file).startsWith('notice-') && file.endsWith('.json')).map(([,value])=>JSON.parse(value)), originalOp, rawOp:operationFiles.get(opPath), lockPresent:operationFiles.has(lockPath), cookieHealth:authCookieFailure?JSON.parse(operationFiles.get('C:\\virtual\\health.json')):null, killed, notes, launchEnvs, processes: [...processes.keys()], listeners: [...listeners], operation: legacyHandoff ? null : (opReadError === 'json' ? null : JSON.parse(operationFiles.get(opPath))), cimReadResult: helperApi.queryApplicationProcesses('app.exe') }))
+  return helperApi.performRestart(handoff, (line) => notes.push(line)).catch(error=>{if(!throwCore)throw error;coreError=error.message}).then(() => ({ coreError, noticesSent, noticeRecords:[...operationFiles.entries()].filter(([file])=>win32.basename(file).startsWith('notice-') && file.endsWith('.json')).map(([,value])=>JSON.parse(value)), originalOp, rawOp:operationFiles.get(opPath), lockPresent:operationFiles.has(lockPath), cookieHealth:authCookieFailure?JSON.parse(operationFiles.get('C:\\virtual\\health.json')):null, killed, notes, launchEnvs, launchCalls, openCalls, closeCalls, processes: [...processes.keys()], listeners: [...listeners], operation: legacyHandoff ? null : (opReadError === 'json' ? null : JSON.parse(operationFiles.get(opPath))), cimReadResult: helperApi.queryApplicationProcesses('app.exe') }))
 }
 
 // Same image and same executable, different profile: only the old host tree is eligible.
@@ -255,6 +284,81 @@ assert.equal(newHostReady.launchEnvs[0].ELECTRON_RUN_AS_NODE, undefined, 'Node m
 const listenerWithoutReceipt=await runHelperScenario({foreignListener:false,startNewHost:true,acknowledgeRecovery:false})
 assert.equal(listenerWithoutReceipt.operation.result,'unknown')
 assert.equal(listenerWithoutReceipt.operation.reason,'ready-unconfirmed','an inspector-only listener is not success')
+
+// ── 2026-11-07 事故改进：unknown 收尾核查下落、尽力找回窗口、捕获新实例输出 ──
+// 真机 11-07：重启后宿主就绪 3 秒退出，页面永远不回；helper 只留一句通用「结果
+// 未知」就撒手，用户干等十几分钟（实际新实例窗口缩在后台），随后系统更新重启
+// 清了现场，根因成谜。三条改进各挂一条用例：窗口在 → 提示去后台并尝试置前；
+// 进程没了 → 明说请手动重开；relaunch 的 stdout/stderr 必须捕获进诊断日志。
+
+const unknownWindowFound = await runHelperScenario({
+  foreignListener: false, startNewHost: true, acknowledgeRecovery: false,
+  notifications: true, windowHandle: 4177, windowForeground: true,
+  relaunchLogPath: 'C:\\virtual\\desktop-restart\\restart-window.log',
+})
+assert.equal(unknownWindowFound.operation.result, 'unknown')
+assert.equal(unknownWindowFound.operation.reason, 'ready-unconfirmed', '下落核查不改变结果分类')
+assert.equal(unknownWindowFound.operation.relaunchAlive, true, '下落核查：新实例活着要如实记录')
+assert.equal(unknownWindowFound.operation.relaunchWindow, true, '下落核查：窗口在')
+assert.equal(unknownWindowFound.operation.relaunchForeground, true, '下落核查：已尝试置前')
+assert(unknownWindowFound.noticeRecords.some((record) => record.summary.includes('窗口已尝试带回前台')), '诊断摘要要说人话：窗口已尝试带回前台')
+assert(unknownWindowFound.notes.some((line) => line.includes('relaunch stdout/stderr is captured')), '日志要声明输出已被捕获')
+assert(unknownWindowFound.openCalls.some((call) => call.file === 'C:\\virtual\\desktop-restart\\restart-window.log' && call.flags === 'a'), 'relaunch 输出要以追加模式捕获进诊断日志')
+const windowFoundSpawn = unknownWindowFound.launchCalls.find((call) => call.command === targetExe)
+// stdio 数组产自 VM realm，原型与测试侧不同，deepEqual 会因原型不等而误报 —— 逐元素比。
+assert.equal(Array.from(windowFoundSpawn.options.stdio).join('|'), 'ignore|77|77', 'spawn 的 stdio 要重定向到诊断日志 fd')
+assert.equal(unknownWindowFound.closeCalls.length, 0, '句柄必须保持打开：spawn 之前不得 closeSync（2026-11-08 事故根因）')
+
+const unknownWindowMissing = await runHelperScenario({
+  foreignListener: false, startNewHost: true, acknowledgeRecovery: false,
+  notifications: true, windowHandle: 0,
+})
+assert.equal(unknownWindowMissing.operation.relaunchAlive, true, '句柄为 0 时进程仍然活着')
+assert.equal(unknownWindowMissing.operation.relaunchWindow, false, '窗口句柄为 0 要如实记录「没有窗口」')
+assert.equal(Object.hasOwn(unknownWindowMissing.operation, 'relaunchForeground'), false, '没有窗口就没有置前可言')
+assert(unknownWindowMissing.noticeRecords.some((record) => record.summary.includes('暂时没有窗口')), '诊断摘要要指向「稍候观察或手动重开」')
+
+const unknownProcessGone = await runHelperScenario({
+  foreignListener: false, startNewHost: true, acknowledgeRecovery: false,
+  notifications: true, relaunchGoneAfterVerify: true,
+})
+assert.equal(unknownProcessGone.operation.relaunchAlive, false, '新实例已退出要如实记录')
+assert.equal(Object.hasOwn(unknownProcessGone.operation, 'relaunchWindow'), false, '进程没了就不报窗口结论')
+assert(unknownProcessGone.noticeRecords.some((record) => record.summary.includes('已退出')), '诊断摘要要明确「请手动重新打开」')
+assert(unknownProcessGone.notes.some((line) => line.includes('has exited by the time readiness timed out')), '日志要写明新实例在收尾前退出')
+
+const unknownProbeUnavailable = await runHelperScenario({
+  foreignListener: false, startNewHost: true, acknowledgeRecovery: false,
+  notifications: true,
+})
+assert.equal(unknownProbeUnavailable.operation.reason, 'ready-unconfirmed')
+assert.equal(unknownProbeUnavailable.operation.relaunchAlive, true, '存活是信号 0 检查，总能得出结论')
+assert.equal(Object.hasOwn(unknownProbeUnavailable.operation, 'relaunchWindow'), false, '窗口探测问不出来时不写窗口字段')
+assert.equal(Object.hasOwn(unknownProbeUnavailable.operation, 'relaunchForeground'), false, '窗口探测问不出来时不写置前字段')
+assert(unknownProbeUnavailable.noticeRecords.some((record) => record.summary.includes('（ready-unconfirmed）')), '下落查不清时诊断摘要走通用 reason 文案')
+
+const noLogPathStdio = await runHelperScenario({ foreignListener: false, startNewHost: true, acknowledgeRecovery: false })
+const plainSpawn = noLogPathStdio.launchCalls.find((call) => call.command === targetExe)
+assert.equal(plainSpawn.options.stdio, 'ignore', '没有日志路径时 stdio 保持 ignore（向后兼容）')
+assert.deepEqual(noLogPathStdio.openCalls, [], '没有日志路径时不得打开任何文件句柄')
+
+// 2026-11-08 事故加固：stdio 句柄抛 EBADF 时，后续尝试必须退回 ignore ——「捕获
+// 日志」是增强功能，绝不能拖死重启本身（与本段引入时的原则一致：日志不可用保持
+// ignore）。真机形态：句柄先关再传，Windows 上 spawn 同步抛 EBADF、三次全灭。
+// VM 里让第一次 spawn 抛 EBADF，断言第二次退回。
+const ebadfFallback = await runHelperScenario({
+  foreignListener: false, startNewHost: true, acknowledgeRecovery: false,
+  relaunchSpawnThrows: true, relaunchAttempts: 2,
+  relaunchLogPath: 'C:\\virtual\\desktop-restart\\restart-ebadf-fallback.log',
+})
+assert.equal(ebadfFallback.launchCalls.length, 2, 'EBADF 之后仍要发起第二次尝试')
+assert.equal(Array.from(ebadfFallback.launchCalls[0].options.stdio).join('|'), 'ignore|77|77', '第一次尝试仍带着捕获句柄')
+assert.equal(ebadfFallback.launchCalls[1].options.stdio, 'ignore', 'EBADF 后的尝试必须退回 ignore')
+assert(ebadfFallback.notes.some((line) => line.includes('relaunch threw: EBADF')), 'EBADF 要如实进日志')
+assert(ebadfFallback.notes.some((line) => line.includes('fall back to ignore')), '退回 ignore 要留痕')
+assert.equal(ebadfFallback.closeCalls.length, 0, '句柄保持打开：spawn 之前不得 closeSync（2026-11-08 事故根因）')
+assert.equal(ebadfFallback.operation.result, 'unknown', '退回后第二次尝试照常走完（本夹具新实例回执不齐 → unknown）')
+assert.equal(ebadfFallback.operation.reason, 'ready-unconfirmed')
 
 // 2026-11-03 issue #4：真机 06:38 那次重启成功，但 netstat 里没匹配到新宿主的
 // 监听项，旧逻辑等到超时判 unknown/ready-unconfirmed，用户看到「结果未知」。
