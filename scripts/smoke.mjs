@@ -2056,6 +2056,15 @@ await ok('helper：从 netstat 里认出「谁在听」（重启完成的新判�
   assert.equal(helper.parseNetstatListeners(undefined), null)
 })
 
+await ok('设置页：清理旧登录令牌的开关已接线（客户端键 + 宿主默认关闭，2026-11-10）', async () => {
+  // 2026-11-10 用户决定启用 C 方案：默认关闭，只有显式开启才在重启窗口里删多余令牌。
+  const client = readFileSync(join(libDir, 'client.js'), 'utf8')
+  const host = readFileSync(join(libDir, 'index.js'), 'utf8')
+  assert.match(client, /authCookiePrune/u, '设置页要能写入 authCookiePrune')
+  assert.match(client, /cookiePrune:/u, '中英文都要有开关文案')
+  assert.match(host, /prune: settings\.authCookiePrune === true/u, '默认关闭：只有显式存 true 才清理')
+  assert.match(host, /pruneStale: authCookieHealth\(\)\.prune/u, '交接里要带上清理意愿')
+})
 await ok('有任务时两击直接强制重启（2026-10-29 决策甲）', async () => {
   await forceContract()
   const broken = readFileSync(join(libDir,'client.js'),'utf8').replace('params.push("now=1")','params.push("now=0")')

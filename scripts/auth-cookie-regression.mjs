@@ -74,6 +74,29 @@ else {
   const locked=await checkAuthCookies({...options,clean:true})
   assert.equal(locked.status,'unavailable');assert.equal(locked.reason,'database-unavailable');assert.equal(locked.cleanup.performed,false)
   locker.exec('ROLLBACK');locker.close()
+  // 2026-11-10：新增的「重启时清理旧登录令牌」——只在显式 pruneStale 时删，
+  // 只删 127.0.0.1 上多余的 dsh-auth-*（保留最新 3 条），其它 Cookie 一个不动。
+  // 此处数据库里有 64 条认证 Cookie（60 + new-0..2 + protected）。
+  const pruned=await checkAuthCookies({...options,pruneStale:true},()=>{},()=>sqlite)
+  assert.equal(pruned.cleanup.enabled,true)
+  assert.equal(pruned.cleanup.performed,true,'prune runs in the downtime window')
+  assert.equal(pruned.cleanup.removed,61,'64 auth cookies → keep newest 3, remove 61')
+  assert.equal(pruned.cleanup.afterAuthCount,3)
+  assert.equal(pruned.sample.authCount,3,'sample after prune reflects the real size')
+  db=new DatabaseSync(databasePath)
+  assert.equal(db.prepare("SELECT count(*) AS n FROM cookies WHERE name='other-cookie'").get().n,1,'unrelated Cookie untouched')
+  assert.equal(db.prepare("SELECT count(*) AS n FROM cookies WHERE name='dsh-auth-foreign'").get().n,1,'other host untouched')
+  assert.equal(db.prepare("SELECT count(*) AS n FROM cookies WHERE name='DSH-auth-not-ours'").get().n,1,'case-variant name untouched')
+  assert.equal(db.prepare("SELECT count(*) AS n FROM cookies WHERE host_key='127.0.0.1' AND name LIKE 'dsh-auth-%' AND substr(name,1,9)='dsh-auth-'").get().n,3)
+  db.close()
+  // 没有新增条目时再跑一次：不报错、不删。
+  const again=await checkAuthCookies({...options,pruneStale:true},()=>{},()=>sqlite)
+  assert.equal(again.cleanup.performed,true);assert.equal(again.cleanup.removed,0,'idempotent when already pruned')
+  // 备份失败时绝不清理（宁可不删）。
+  const skipOnBackupFailure=await checkAuthCookies({...options,pruneStale:true,backup:true,backupDir:badBackup},()=>{},()=>sqlite)
+  assert.equal(skipOnBackupFailure.status,'unavailable')
+  assert.equal(skipOnBackupFailure.cleanup.performed,false,'no prune without a successful backup')
+  console.log('AUTH COOKIE prune: keeps newest 3, removes 61, other rows untouched, idempotent, skipped on backup failure')
   let opened=false
   const blocked=await checkAuthCookies({...options,blocked:true},()=>{},()=>{opened=true;throw new Error('must not load SQLite')})
   assert.equal(opened,false);assert.equal(blocked.reason,'old-instance-running')
