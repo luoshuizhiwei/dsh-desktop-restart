@@ -2184,6 +2184,23 @@ for (const elapsed of [5100, 1000]) {
   assert.equal(dom.observations().length, 0)
   passed++; console.log(`ok ${passed} - account menu: one item, host styling, shared panel warn, close/reopen/unload cleanup`)
 }
+{
+  // 2026-11-10 用户反馈：结果未知时账号菜单项变成「结果未知」，看着像出故障。
+  // 菜单是入口不是状态面板：终态 unknown 一律显示中性名称，结论留在插件面板。
+  const dom = accountMenuDOM()
+  const h = makeHarness(async () => reply(200, statusBody('off', {
+    restartBusy: true,
+    restartOp: {id:'unknown-op',result:'unknown',phase:'launch',reason:'ready-unconfirmed',helperAlive:true,busy:true},
+  })), {dom})
+  const mount = h.render(h.panelComponent)
+  await flush(); dom.open(); await flush(); h.settleMenu()
+  assert.equal(dom.injected().length, 1)
+  const unknownButton = dom.injected()[0]
+  assert.match(unknownButton.textContent, /Restart desktop app|重启桌面应用/u, 'menu keeps the neutral action name')
+  assert.doesNotMatch(unknownButton.textContent, /Unknown|结果未知/u, 'menu never shouts unknown')
+  h.unmount(mount.hook); h.dispose()
+  passed++; console.log(`ok ${passed} - account menu keeps a neutral label when the last result is unknown`)
+}
 for (const scenario of ['missing', 'empty', 'ambiguous', 'wrong-launcher', 'nested', 'append-failure', 'observer-failure', 'footer-only', 'no-presentation']) {
   const dom = accountMenuDOM(scenario)
   const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
