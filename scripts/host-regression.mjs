@@ -342,6 +342,19 @@ assert.equal(exitedPendingStatus.body.restartOp.busy, false)
 assert.equal(exitedPendingStatus.body.restartOp.needsManualCheck, true)
 results.push({ case: 'verified-helper-exit-releases-pending-operation-as-unknown', passed: true })
 
+// 2026-11-10 真机：helper 先写终态再退出，宿主可能在落盘前就判成 unknown。
+// 记录随后写成 ok 时，下一次状态查询必须把结论纠正回来，而不是永远挂着红字。
+files.set(missingRestart.module.namespace.__test.opFileOf(exitedPendingId), JSON.stringify({
+  id: exitedPendingId, schema: 1, phase: 'done', result: 'ok', reason: 'ready-without-port', pid: reusedIdentity.pid,
+  hostPid: reusedIdentity.parentPid, helperIdentity: reusedIdentity, helperVerified: true,
+  startedAt: new Date().toISOString(), stages: { launch: 1000 },
+}))
+const correctedStatus = await exitedPending.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+assert.equal(correctedStatus.body.restartOp.result, 'ok', 'a late ok record corrects the premature unknown')
+assert.equal(correctedStatus.body.restartOp.reason, 'ready-without-port')
+assert.equal(correctedStatus.body.restartOp.busy, false)
+results.push({ case: 'late-terminal-record-corrects-helper-exited-unknown', passed: true })
+
 const invalidIdentityId = 'invalid-helper-created-at'
 const invalidIdentity = { ...reusedIdentity, pid: 781, createdAt: 'not-a-date' }
 files.set(missingRestart.module.namespace.__test.opFileOf(invalidIdentityId), JSON.stringify({
