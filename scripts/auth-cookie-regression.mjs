@@ -78,6 +78,8 @@ else {
   // 只删 127.0.0.1 上多余的 dsh-auth-*（保留最新 3 条），其它 Cookie 一个不动。
   // 此处数据库里有 64 条认证 Cookie（60 + new-0..2 + protected）。
   const pruned=await checkAuthCookies({...options,pruneStale:true},()=>{},()=>sqlite)
+  assert.equal(pruned.backup.performed,true,'prune forces a backup even when backup is off (R01)')
+  assert.equal(pruned.backup.forcedByPrune,true,'the backup exists because pruning needs it')
   assert.equal(pruned.cleanup.enabled,true)
   assert.equal(pruned.cleanup.performed,true,'prune runs in the downtime window')
   assert.equal(pruned.cleanup.removed,61,'64 auth cookies → keep newest 3, remove 61')
@@ -92,6 +94,18 @@ else {
   // 没有新增条目时再跑一次：不报错、不删。
   const again=await checkAuthCookies({...options,pruneStale:true},()=>{},()=>sqlite)
   assert.equal(again.cleanup.performed,true);assert.equal(again.cleanup.removed,0,'idempotent when already pruned')
+  // 2026-11-10 审查 R02：删除中途失败必须整体回滚，不能删掉一部分还报 0 条。
+  db=new DatabaseSync(databasePath)
+  for(let i=0;i<5;i++) db.prepare('INSERT INTO cookies VALUES (?,?,?,?)').run('127.0.0.1','dsh-auth-block-'+i,'v',Buffer.alloc(0))
+  db.exec("CREATE TRIGGER dshdr_block BEFORE DELETE ON cookies BEGIN SELECT RAISE(ABORT,'blocked-for-test'); END")
+  const blockedCountBefore=db.prepare("SELECT count(*) AS n FROM cookies").get().n
+  db.close()
+  const partial=await checkAuthCookies({...options,pruneStale:true},()=>{},()=>sqlite)
+  assert.equal(partial.cleanup.performed,false,'a failed delete is not reported as success')
+  db=new DatabaseSync(databasePath)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM cookies').get().n,blockedCountBefore,'rollback leaves every row intact')
+  db.exec('DROP TRIGGER dshdr_block')
+  db.close()
   // 备份失败时绝不清理（宁可不删）。
   const skipOnBackupFailure=await checkAuthCookies({...options,pruneStale:true,backup:true,backupDir:badBackup},()=>{},()=>sqlite)
   assert.equal(skipOnBackupFailure.status,'unavailable')

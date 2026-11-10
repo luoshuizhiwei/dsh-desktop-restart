@@ -355,6 +355,20 @@ assert.equal(correctedStatus.body.restartOp.reason, 'ready-without-port')
 assert.equal(correctedStatus.body.restartOp.busy, false)
 results.push({ case: 'late-terminal-record-corrects-helper-exited-unknown', passed: true })
 
+// 2026-11-10 审查 R07：二读只认显式终态。result 缺失/非法时不得当作可采纳的终态。
+const invalidResultId = 'invalid-result-while-helper-exited'
+files.set(missingRestart.module.namespace.__test.opFileOf(invalidResultId), JSON.stringify({
+  id: invalidResultId, schema: 1, phase: 'verify', pid: reusedIdentity.pid,
+  hostPid: reusedIdentity.parentPid, helperIdentity: reusedIdentity, helperVerified: true,
+  startedAt: new Date().toISOString(), stages: {},
+}))
+const invalidResultHost = await boot({ restartId: invalidResultId, processList: [{ ...reusedIdentity, createdAt: '2026-10-22T00:01:00.000Z' }] })
+const invalidResultStatus = await invalidResultHost.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+assert.equal(invalidResultStatus.body.restartOp.result, 'unknown', 'a result-less record is not adopted as terminal')
+assert.equal(invalidResultStatus.body.restartOp.reason, 'helper-exited')
+assert.equal(invalidResultStatus.body.restartOp.busy, false, 'the operation is released, not stuck pending')
+results.push({ case: 'result-less-record-falls-back-to-helper-exited-unknown', passed: true })
+
 const invalidIdentityId = 'invalid-helper-created-at'
 const invalidIdentity = { ...reusedIdentity, pid: 781, createdAt: 'not-a-date' }
 files.set(missingRestart.module.namespace.__test.opFileOf(invalidIdentityId), JSON.stringify({

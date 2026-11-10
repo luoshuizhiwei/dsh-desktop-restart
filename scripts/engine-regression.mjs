@@ -17,7 +17,7 @@ function makeProcess(pid, parentPid, path, createdAt, commandLine = 'app.exe') {
   return { pid, parentPid, path, createdAt: new Date(createdAt).toISOString(), commandLine }
 }
 
-function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failLaunchWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false, newHostListener = true, incompleteNewHostRow = false, windowHandle = null, windowForeground = false, relaunchGoneAfterVerify = false, relaunchLogPath = '', relaunchSpawnThrows = false, relaunchAttempts = 1 }) {
+function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failLaunchWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false, newHostListener = true, incompleteNewHostRow = false, windowHandle = null, windowForeground = false, relaunchGoneAfterVerify = false, relaunchLogPath = '', relaunchSpawnThrows = false, relaunchAttempts = 1, captureChildOutput = false }) {
   let clock = Date.now()
   const main = makeProcess(100, 1, targetExe, clock - 20_000, '"C:\\DSH\\app.exe" --user-data-dir=C:\\profile-A')
   const host = makeProcess(101, 100, targetExe, clock - 15_000, '"C:\\DSH\\app.exe" --expose-internals')
@@ -238,6 +238,7 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
   if (withLock) handoff.restartLock={path:lockPath,token:'restart-test-123'}
   if (privateExe) {handoff.exe=win32.basename(targetExe);handoff.exeFromEnv=true}
   if (relaunchLogPath !== '') handoff.logPath = relaunchLogPath
+if (captureChildOutput) handoff.captureChildOutput = true
   if (badHandoff) handoff.mainPid=0
   if (throwCore) handoff.mainPid={valueOf(){throw new Error('fixture unexpected core failure')}}
   let coreError=null
@@ -294,7 +295,7 @@ assert.equal(listenerWithoutReceipt.operation.reason,'ready-unconfirmed','an ins
 const unknownWindowFound = await runHelperScenario({
   foreignListener: false, startNewHost: true, acknowledgeRecovery: false,
   notifications: true, windowHandle: 4177, windowForeground: true,
-  relaunchLogPath: 'C:\\virtual\\desktop-restart\\restart-window.log',
+  relaunchLogPath: 'C:\\virtual\\desktop-restart\\restart-window.log', captureChildOutput: true,
 })
 assert.equal(unknownWindowFound.operation.result, 'unknown')
 assert.equal(unknownWindowFound.operation.reason, 'ready-unconfirmed', '下落核查不改变结果分类')
@@ -342,6 +343,15 @@ const plainSpawn = noLogPathStdio.launchCalls.find((call) => call.command === ta
 assert.equal(plainSpawn.options.stdio, 'ignore', '没有日志路径时 stdio 保持 ignore（向后兼容）')
 assert.deepEqual(noLogPathStdio.openCalls, [], '没有日志路径时不得打开任何文件句柄')
 
+// 2026-11-10 审查 R03：新实例原始输出含 token/路径，默认不捕获；只有交接显式要求才开。
+const logPathNoCapture = await runHelperScenario({
+  foreignListener: false, startNewHost: true, acknowledgeRecovery: false,
+  relaunchLogPath: 'C:\\virtual\\desktop-restart\\restart-nocapture.log',
+})
+const noCaptureSpawn = logPathNoCapture.launchCalls.find((call) => call.command === targetExe)
+assert.equal(noCaptureSpawn.options.stdio, 'ignore', 'raw child output stays uncaptured unless explicitly requested')
+assert.deepEqual(logPathNoCapture.openCalls, [], 'no log handle is opened when capture is off')
+
 // 2026-11-08 事故加固：stdio 句柄抛 EBADF 时，后续尝试必须退回 ignore ——「捕获
 // 日志」是增强功能，绝不能拖死重启本身（与本段引入时的原则一致：日志不可用保持
 // ignore）。真机形态：句柄先关再传，Windows 上 spawn 同步抛 EBADF、三次全灭。
@@ -349,7 +359,7 @@ assert.deepEqual(noLogPathStdio.openCalls, [], '没有日志路径时不得打�
 const ebadfFallback = await runHelperScenario({
   foreignListener: false, startNewHost: true, acknowledgeRecovery: false,
   relaunchSpawnThrows: true, relaunchAttempts: 2,
-  relaunchLogPath: 'C:\\virtual\\desktop-restart\\restart-ebadf-fallback.log',
+  relaunchLogPath: 'C:\\virtual\\desktop-restart\\restart-ebadf-fallback.log', captureChildOutput: true,
 })
 assert.equal(ebadfFallback.launchCalls.length, 2, 'EBADF 之后仍要发起第二次尝试')
 assert.equal(Array.from(ebadfFallback.launchCalls[0].options.stdio).join('|'), 'ignore|77|77', '第一次尝试仍带着捕获句柄')

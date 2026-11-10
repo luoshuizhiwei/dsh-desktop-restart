@@ -105,7 +105,7 @@ DSH stores a sign-in credential on every launch, and those credentials are never
 
 Settings shows the last check: how much is used, the limit (16 KiB), and how many records exist. **By default it only checks during a restart performed by this plugin** (that is when the database is not locked).
 
-> The database is always opened read-only. **It never deletes or modifies your sign-in data.** You can enable "back up on restart" to keep the last 3 copies; when usage is near the limit it tells you how to clean up manually and gives the exact path.
+> The database is opened **read-only** for checks and backups. **Nothing is deleted unless you switch on the optional "prune old sign-in tokens" below**, which first makes a backup and only then removes surplus `dsh-auth-*` rows. You can enable "back up on restart" to keep the last 3 copies; when usage is near the limit it tells you how to clean up manually and gives the exact path.
 
 ### Leftover temp file preview
 
@@ -252,7 +252,7 @@ config: { panel: false, footer: false, header: false, settingsRow: false, accoun
 
 Settings shows the last downtime check: estimated usage, the 16 KiB default limit, the number of auth cookies and the check time. It is not live monitoring. Without a sample it shows "no downtime check result yet"; ordinary manual starts and quits do not update it.
 
-"Back up the cookie database on restart" is off by default; "warn at 80%" is on. The database is always opened read-only; the optional consistent backup keeps the last 3 copies and **never deletes any cookie**. Above the limit it shows how to quit DSH, keep a backup and clean up manually. This feature does not raise the request header limit.
+"Back up the cookie database on restart" is off by default; "warn at 80%" is on. The database is opened read-only for checks; the optional consistent backup keeps the last 3 copies. **Pruning is a separate, default-off switch**: when enabled it backs up first, then trims surplus `dsh-auth-*` rows on `127.0.0.1` down to the newest 3, and reports how many were removed. Above the limit it shows how to quit DSH, keep a backup and clean up manually. This feature does not raise the request header limit.
 
 The check runs in a worker thread with an 8-second budget, then terminates and waits for the thread to exit, so a stuck database cannot stall the restart. Backups are written as `.partial` and renamed, so only complete files count toward retention.
 
