@@ -2654,6 +2654,8 @@ for(const triggerConnected of [true,false]) {
   const extras=children.findIndex(n=>n.type==='h3'&&/Bundled extras|附带功能/u.test(textContent(n)))
   const health=children.findIndex(n=>n.type?.name==='AuthCookieHealth')
   assert.ok(extras>=0&&health>extras,'health belongs to bundled extras')
+  // 2026-11-10 用户要求：设置页不再出现诊断提示块（面板里仍保留）。
+  assert.equal(walk(section.tree,n=>n.type?.name==='DiagnosticNotices'),null,'settings page carries no diagnostic notices')
   const mounted=h.render(h.authCookieComponent);await flush()
   const tree=h.render(h.authCookieComponent,mounted.hook).tree
   assert.equal(tree.type,'details')
