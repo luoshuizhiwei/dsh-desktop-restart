@@ -2062,6 +2062,8 @@ await ok('设置页：清理旧登录令牌的开关已接线（客户端键 + �
   const host = readFileSync(join(libDir, 'index.js'), 'utf8')
   assert.match(client, /authCookiePrune/u, '设置页要能写入 authCookiePrune')
   assert.match(client, /cookiePrune:/u, '中英文都要有开关文案')
+  // 2026-11-10 审查 R09：中性名称必须让位给本轮交互（确认/警告/进行中）。
+  assert.match(client, /action\.phase !== "confirm" && action\.phase !== "warn" && action\.phase !== "restarting"/u, '菜单中性文案不得压过确认态')
   assert.match(host, /prune: settings\.authCookiePrune === true/u, '默认关闭：只有显式存 true 才清理')
   assert.match(host, /pruneStale: authCookieHealth\(\)\.prune/u, '交接里要带上清理意愿')
 })
