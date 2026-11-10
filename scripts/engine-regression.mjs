@@ -557,6 +557,10 @@ if (!process.env.DSHDR4C_CASE || process.env.DSHDR4C_CASE === 'A') {
     assert.doesNotThrow(()=>store.list(),'html-only residue must not break listing')
     io.unlinkSync(join(dir,unreadIds[0]+'.delivery'))
     assert.equal(store.list().find(n=>n.id===unreadIds[0]).delivery.code,'visibility-unconfirmed')
+    // 2026-11-10 审查 R08：已读标记不能被重复调用重写（会改时间戳、抹掉结案归因）。
+    const markerBefore=io.readFileSync(join(dir,readIds[59]+'.read'),'utf8')
+    store.markRead(readIds[59])
+    assert.equal(io.readFileSync(join(dir,readIds[59]+'.read'),'utf8'),markerBefore,'an already-read marker is never rewritten')
     io.unlinkSync(join(dir,readIds[59]+'.read'))
     assert.equal(store.list().find(n=>n.id===readIds[59]).unread,true,'a missing read marker is immediately unread')
     for(let i=0;i<12;i++) seed('extra-'+i,new Date(Date.UTC(2027,0,1,0,i)).toISOString(),true)
