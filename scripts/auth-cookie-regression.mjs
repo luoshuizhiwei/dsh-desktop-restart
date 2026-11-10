@@ -106,6 +106,27 @@ else {
   assert.equal(db.prepare('SELECT count(*) AS n FROM cookies').get().n,blockedCountBefore,'rollback leaves every row intact')
   db.exec('DROP TRIGGER dshdr_block')
   db.close()
+  // 2026-11-10 审查 R05：真实库有 creation_utc；构造 rowid 与创建时间相反的数据，
+  // 断言按创建时间保留最新 3 条，而不是按 rowid。
+  const skewPath=join(root,'skew')
+  mkdirSync(skewPath,{recursive:true})
+  const skewDbPath=join(skewPath,'Cookies')
+  const skewDb=new DatabaseSync(skewDbPath)
+  skewDb.exec('CREATE TABLE cookies(creation_utc INTEGER,host_key TEXT,name TEXT,value TEXT,encrypted_value BLOB)')
+  const skewInsert=skewDb.prepare('INSERT INTO cookies VALUES (?,?,?,?,?)')
+  // rowid 1..5，creation_utc 依次递减：rowid 最大的反而是最旧的令牌。
+  for(let i=0;i<5;i++) skewInsert.run(String(1000-i),'127.0.0.1','dsh-auth-skew-'+i,'v',Buffer.alloc(0))
+  skewDb.close()
+  const skewOptions={databasePath:skewDbPath,statePath:join(skewPath,'health.json'),backupDir:join(skewPath,'backups'),pruneStale:true}
+  const skew=await checkAuthCookies(skewOptions,()=>{},()=>sqlite)
+  assert.equal(skew.cleanup.performed,true)
+  assert.equal(skew.cleanup.removed,2,'five rows → keep newest 3 by creation time')
+  const skewAfter=new DatabaseSync(skewDbPath)
+  const keptNames=skewAfter.prepare("SELECT name FROM cookies WHERE host_key='127.0.0.1' AND name LIKE 'dsh-auth-%' ORDER BY name").all().map(r=>r.name)
+  skewAfter.close()
+  assert.deepEqual(keptNames,['dsh-auth-skew-0','dsh-auth-skew-1','dsh-auth-skew-2'],'newest creation_utc wins, not rowid')
+  console.log('AUTH COOKIE prune: sorts by creation_utc when rowid order is reversed')
+
   // 备份失败时绝不清理（宁可不删）。
   const skipOnBackupFailure=await checkAuthCookies({...options,pruneStale:true,backup:true,backupDir:badBackup},()=>{},()=>sqlite)
   assert.equal(skipOnBackupFailure.status,'unavailable')
