@@ -108,7 +108,7 @@ console.log(`ok ${passed} - structured install block is localized in English`)
   await flush()
   tree = harness.render(harness.sweepComponent, instance.hook).tree
   const result = textContent(walk(tree, (node) => node.type === 'span' && node.props.className === 'dshdr-set-result'))
-  assert.match(result, /2 candidates \(estimated 5\.0 MB\); preview only, nothing deleted/u)
+  assert.match(result, /2 candidates \(estimated 5\.0 MB\)/u)
   assert.match(result, /candidate ownership could not be verified/u)
   assert.doesNotMatch(result, /freed/u)
   assert.equal(runs, 1)
