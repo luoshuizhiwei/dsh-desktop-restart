@@ -1526,7 +1526,7 @@ await ok('插件开关：清理那一行读写的宿主设置，不是浏览器�
   sourceTextChecks.match("T069", source, /\?enabled=0/u, '关掉开关也要通知宿主')
   sourceTextChecks.match("T070", source, /\?run=1/u, '「立即清理」要能单独触发一次')
   sourceTextChecks.match("T071", source, /sweep: body\.sweep/u, '开关状态必须来自宿主的状态接口（不许客户端自己编默认值）')
-  sourceTextChecks.match("T072", source, /当前版本只扫描并预览候选项，不会删除/u, '界面明确当前只预览')
+  sourceTextChecks.match("T072", source, /默认只扫描并预览；开启上面的开关后才会真正删除/u, '界面明确默认只预览、删除需显式开启')
 })
 
 await ok('左侧边栏：注册进官方座位 sidebar.footer.action，照官方 42px 动作行', async () => {
