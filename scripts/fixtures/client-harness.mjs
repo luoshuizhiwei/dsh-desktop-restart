@@ -72,7 +72,9 @@ function makeHarness(fetchHandler, options = {}) {
     },
   }
   const window = {
-    localStorage: options.storage ?? { getItem: () => null, setItem() {} },
+    // 2026-11-13：settingsRow 生产默认已关闭。夹具需要那一行组件在场才能测它的状态文案，
+    // 所以在「未显式给 storage」时预置 settingsRow:true；生产默认值由 smoke 断言把关。
+    localStorage: options.storage ?? { getItem: (key) => (key === 'dsh-desktop-restart.entries' ? JSON.stringify({ settingsRow: true }) : null), setItem() {} },
     setTimeout(callback, delay) { const id = nextTimerId++; timers.set(id, { callback, delay }); return id },
     clearTimeout(id) { timers.delete(id) },
     requestAnimationFrame(callback) { const id = nextTimerId++; frames.set(id, callback); return id },

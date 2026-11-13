@@ -1459,7 +1459,7 @@ await ok('左上角：注册进官方面板座位（同任务看板），行交�
 })
 
 await ok('插件开关：宿主 config 里的入口开关（缺省 true）', async () => {
-  assert.deepEqual(__test.readEntries({}), { panel: true, footer: true, header: true, command: true, settingsRow: true, accountMenu: true, headerRefresh: false })
+  assert.deepEqual(__test.readEntries({}), { panel: true, footer: true, header: true, command: true, settingsRow: false, accountMenu: true, headerRefresh: false })
   const off = __test.readEntries({ footer: false, command: false })
   assert.equal(__test.readEntries({accountMenu:false}).accountMenu,false)
   assert.equal(__test.readEntries({accountMenu:undefined}).accountMenu,true)
@@ -1504,7 +1504,17 @@ await ok('插件开关：本机保存的选择能真的关掉入口（并保留�
   assert.ok(!names.includes('sidebar.footer.action'), '本地关掉的入口不该再注册')
   assert.ok(names.includes('sidebar.panellist'), '没关的照旧注册')
   assert.ok(names.includes('conversation.session.header.actions'))
-  assert.ok(names.includes('settings.general.item'))
+  assert.ok(!names.includes('settings.general.item'), '设置页那一行默认关闭（2026-11-13 决定）')
+{
+  // 显式打开后仍应注册 —— 保留功能，只是默认不再打扰。
+  const onStore = new Map([['dsh-desktop-restart.entries', JSON.stringify({ settingsRow: true })]])
+  const onStorage = { getItem: (k) => (onStore.has(k) ? onStore.get(k) : null), setItem: (k, v) => onStore.set(k, String(v)), removeItem: (k) => onStore.delete(k) }
+  const onBundle = loadClientBundle({ storage: onStorage })
+  const onRegistered = []
+  const onSlots = { inject: (name, fn) => { fn(); return () => {} }, register: (o) => { onRegistered.push(o); return () => {} } }
+  onBundle.plugin.apply({ get: (k) => (k === 'slots' ? onSlots : undefined), effect: (fn) => fn() })
+  assert.ok(onRegistered.map((e) => e.name).includes('settings.general.item'), '显式打开后仍注册')
+}
   assert.ok(names.includes('settings.section'), '开关页本身必须一直在，否则关掉就回不来了')
 })
 
