@@ -116,6 +116,58 @@ console.log(`ok ${passed} - structured install block is localized in English`)
   console.log(`ok ${passed} - sweep preview shows estimated candidates and unknown-owner reason without claiming freed space`)
 }
 
+// 2026-11-13：删除候选项必须「默认没有按钮、开了还要两步确认」。
+{
+  const calls = []
+  const lastWithCandidates = {
+    at: '2026-11-13T03:00:00.000Z', scanned: 9, removed: 2, failed: 0, bytes: 3 * 1024 * 1024,
+    candidateCount: 7, candidateBytes: 6 * 1024 * 1024, skippedCount: 2, skipReason: null,
+    candidates: [
+      { name: 'dsh-workspace-changes-a', bytes: 1048576, files: 3 },
+      { name: 'dsh-workspace-changes-b', bytes: 2097152, files: 5 },
+    ],
+    removedNames: ['dsh-workspace-changes-x', 'dsh-workspace-changes-y'], freedBytes: 3145728,
+  }
+  // 按精确文本找按钮（buttonWithText 找不到会抛错，不适用于「应当不存在」的断言）。
+const findClean = (tree) => walk(tree, (node) => (typeof node.type === 'string' || node.type?.name) && textContent(node).trim() === 'Clean up')
+const build = (sweepDelete) => makeHarness(async (url, options) => {
+    calls.push({ url, method: options.method ?? 'GET' })
+    if (options.method === 'POST') {
+      if (url.includes('delete=1')) return reply(200, { ok: true, enabled: true, sweepDelete: true, last: lastWithCandidates })
+      if (url.includes('sweepDelete=1')) return reply(200, { ok: true, sweepDelete: true, last: lastWithCandidates })
+      return reply(200, { ok: true, enabled: true, last: lastWithCandidates })
+    }
+    return reply(200, statusBody('off', { sweep: { enabled: true, last: lastWithCandidates }, sweepDelete }))
+  })
+
+  const off = build(false)
+  const offMount = off.render(off.sweepComponent)
+  await flush()
+  let offTree = off.render(off.sweepComponent, offMount.hook).tree
+  assert.equal(findClean(offTree), null, 'no clean button while deleting is off')
+  assert.match(textContent(offTree), /dsh-workspace-changes-a/u, 'candidate names are listed')
+
+  const on = build(true)
+  const onMount = on.render(on.sweepComponent)
+  await flush()
+  let onTree = on.render(on.sweepComponent, onMount.hook).tree
+  const cleanButton = findClean(onTree)
+  assert.ok(cleanButton, 'opt-in reveals the clean button')
+  const before = calls.filter((c) => c.url.includes('delete=1')).length
+  cleanButton.props.onClick()
+  await flush()
+  onTree = on.render(on.sweepComponent, onMount.hook).tree
+  assert.equal(calls.filter((c) => c.url.includes('delete=1')).length, before, 'first click only arms')
+  assert.match(textContent(onTree), /cannot be undone|6 seconds/u, 'first click asks for confirmation')
+  walk(onTree, (node) => (typeof node.type === 'string' || node.type?.name) && textContent(node).trim() === 'Confirm delete?').props.onClick()
+  await flush()
+  assert.equal(calls.filter((c) => c.url.includes('delete=1')).length, before + 1, 'second click performs the deletion')
+  const afterTree = on.render(on.sweepComponent, onMount.hook).tree
+  assert.match(textContent(afterTree), /Deleted 2 folder/u, 'result reports what was removed')
+  passed += 1
+  console.log(`ok ${passed} - sweep delete is opt-in and needs a second confirmation`)
+}
+
 {
   let reads = 0
   const harness = makeHarness(async (_url, options) => {

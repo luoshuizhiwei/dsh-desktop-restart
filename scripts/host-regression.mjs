@@ -297,6 +297,20 @@ assert.equal(scanEmptyResponse.body.last.partial, false)
 assert.equal(scanEmptyResponse.body.last.scanned, 0)
 results.push({ case: 'scan-api-preserves-normal-empty-result', passed: true })
 
+// 2026-11-13：删除候选项是默认关闭的独立能力；没开开关就必须明确拒绝，不能静默只预览。
+const deleteOff = await boot({ restartId: 'scan-delete-off' })
+const deleteOffResponse = await deleteOff.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?run=1&delete=1')
+assert.equal(deleteOffResponse.status, 403, 'delete without opt-in is refused')
+assert.match(String(deleteOffResponse.body.error ?? ''), /未在设置里开启/u)
+results.push({ case: 'scan-delete-refused-when-switch-off', passed: true })
+
+const deleteOn = await boot({ restartId: 'scan-delete-on' })
+await deleteOn.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?sweepDelete=1')
+const deleteOnResponse = await deleteOn.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?run=1&delete=1')
+assert.equal(deleteOnResponse.status, 200)
+assert.equal(deleteOnResponse.body.sweepDelete, true, 'status reflects the switch')
+results.push({ case: 'scan-delete-allowed-after-opt-in', passed: true })
+
 const missingRestart = await boot({ restartId: 'missing-operation' })
 const missingStatus = await missingRestart.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
 assert.equal(missingStatus.body.restartOp.result, 'unknown')

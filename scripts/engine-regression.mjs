@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, utimesSync, lstatSync, rmSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, utimesSync, lstatSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename, dirname, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -526,6 +526,37 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '3') {
     assert.ok(polls<=4,'cancellation should stop before the ten children are traversed')
   } finally {rmSync(root,{recursive:true,force:true})}
   console.log('PASS 4B-3 recursive cancellation returns partial, stops traversal and removes nothing')
+
+// 2026-11-13：候选删除必须默认不发生，且只在显式要求时删除「已核验的普通目录」。
+{
+  const root = mkdtempSync(join(tmpdir(), 'dshdr-sweep-delete-'))
+  try {
+    const old = join(root, 'dsh-workspace-changes-old')
+    mkdirSync(old)
+    const oldFile = join(old, 'a.bin')
+    writeFileSync(oldFile, 'x')
+    // inspectTree 读真实 mtime：必须把目录与文件都回拨到很久以前，否则会被判成活目录。
+    const past = new Date(Date.now() - 5 * 86400000)
+    utimesSync(old, past, past)
+    utimesSync(oldFile, past, past)
+    const young = join(root, 'dsh-workspace-changes-young')
+    mkdirSync(young)
+    const now = Date.now()
+    const startedAtMs = now - 60_000
+    const statOf = (target) => {
+      const isOld = target === old
+      return { isDirectory: () => true, birthtimeMs: isOld ? now - 5 * 86400000 : now - 1000, ctimeMs: now - 5 * 86400000, mtimeMs: isOld ? now - 86400000 : now - 1000 }
+    }
+    const previewOnly = await sweepOrphanSnapshots({ tempRoot: root, startedAtMs, minAgeMs: 0, now, statOf })
+    assert.deepEqual(previewOnly.removed, [], 'preview never deletes by default')
+    assert(existsSync(old), 'old candidate still on disk after a preview scan')
+    const deleted = await sweepOrphanSnapshots({ tempRoot: root, startedAtMs, minAgeMs: 0, now, statOf, deleteCandidates: true })
+    assert.deepEqual(deleted.removed, ['dsh-workspace-changes-old'], 'only the verified old folder is removed')
+    assert.equal(existsSync(old), false, 'candidate folder is gone')
+    assert.equal(existsSync(young), true, 'too-young folder is never touched')
+    console.log('PASS SWEEP DELETE: preview never deletes; explicit delete removes only verified old folders')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+}
 }
 
 if (!process.env.DSHDR4C_CASE || process.env.DSHDR4C_CASE === 'A') {
