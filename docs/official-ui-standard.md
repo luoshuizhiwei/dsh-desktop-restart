@@ -3,7 +3,7 @@
 本文件是从**本机安装的 DSH 桌面版**（`resources/app.asar`，运行时 0.2.0-rc.2）里提取的官方界面标准，
 用于让本插件的界面和官方保持一致。所有数值都是**逐字抄录**，不是我的推测。
 
-提取方式：`E:\dsh-asar-probe\asar.cjs`（只读解析 app.asar 的头部索引，按路径取文件）。
+提取方式：用一个只读的 `app.asar` 解析脚本（脚本未入库、不在本仓库内），按头部索引按路径取文件。
 官方源码路径写在每段前面 —— 那是应用自己的 `packages/client/*/src/...`。
 
 ## 1. 官方共享组件库：`@deepseek-ai/dsh-client-ui-primitives`
