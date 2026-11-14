@@ -311,6 +311,11 @@ assert.equal(deleteOnResponse.status, 200)
 assert.equal(deleteOnResponse.body.sweepDelete, true, 'status reflects the switch')
 results.push({ case: 'scan-delete-allowed-after-opt-in', passed: true })
 
+// 2026-11-14：status 必须带出 sweepDelete，否则界面重载后开关显示回「关」。
+const deleteStatus = await deleteOn.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+assert.equal(deleteStatus.body.sweepDelete, true, 'status must carry sweepDelete so the UI reflects the stored switch')
+results.push({ case: 'status-carries-sweep-delete-flag', passed: true })
+
 const missingRestart = await boot({ restartId: 'missing-operation' })
 const missingStatus = await missingRestart.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
 assert.equal(missingStatus.body.restartOp.result, 'unknown')
