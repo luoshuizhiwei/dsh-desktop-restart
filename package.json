@@ -1,7 +1,7 @@
 {
   "name": "@luoshuizhiwei/dsh-desktop-restart",
-  "version": "0.4.9",
-  "description": "Adds a restart button to the DeepSeek Harness desktop app. If work is still running it asks before restarting, and afterwards it tells you how long the app was down. Optional extras: check the size of saved sign-in data, preview leftover temp files, hide the feedback item in the account menu. UI follows the app language (zh/en). 给 DeepSeek Harness 桌面版加一个重启按钮：有任务在跑时会先问过你，重启后告诉你停机了多久。另有可选功能：检查登录数据占用、预览遗留临时文件、隐藏账号菜单里的意见反馈。界面跟随应用语言（中/英）。",
+  "version": "0.4.10",
+  "description": "给 DSH 桌面版加一键重启：只结束 Electron 主进程，宿主自己优雅退出、会话照常落盘；有任务在跑时先问你，插件在装时硬拦；重启完告诉你停机多久、新实例起来没有。六个入口可逐个关闭，另带登录数据体检、遗留临时文件预览、隐藏账号菜单反馈项。界面跟随应用语言（中/英）。 One-click restart for DSH Desktop: ends only the Electron main process so the host exits gracefully and sessions flush; asks first when work is running, hard-blocks while plugins install, then reports the downtime and whether the new instance came up. Six independently toggleable entry points, plus a sign-in data health check, leftover temp-file preview and a hide-feedback switch. UI follows the app language (zh/en).",
   "keywords": [
     "dsh",
     "dsh-plugin",
