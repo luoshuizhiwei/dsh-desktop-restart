@@ -681,29 +681,43 @@ if (!process.env.DSHDR_CASE || ['S1', 'S1-hide'].includes(process.env.DSHDR_CASE
     for (const saved of [true, false]) {
       const savedEntries = Object.fromEntries(entryKeys.map(name => [name, name === key ? saved : true]))
       const values = new Map([[storageKey, JSON.stringify(savedEntries)]])
+      // 2026-11-14 ADR：入口开关写宿主设置文件（entry-<key>），失败注入挪到 prefs POST；
+      // localStorage 只作缓存，不再是事实来源（对照 dsh-restart-now ADR-001 的强杀回弹教训）。
       let failWrites = true
       const storage = {
         getItem: name => values.get(name) ?? null,
-        setItem(name, value) { if (failWrites) throw new Error('S1 quota exceeded'); values.set(name, value) },
+        setItem(name, value) { values.set(name, value) },
       }
-      const harness = makeHarness(async () => reply(200, statusBody()), { storage })
+      const harness = makeHarness(async (url, options) => {
+        if (options.method === 'POST' && url.includes('entry-')) {
+          if (failWrites) return reply(500, { ok: false, error: 'S1 quota exceeded' })
+          const m = /entry-([a-zA-Z]+)=(0|1)/u.exec(url)
+          const merged = { ...savedEntries, [m[1]]: m[2] === '1' }
+          values.set(storageKey, JSON.stringify(merged))
+          return reply(200, { ok: true, entries: merged })
+        }
+        return reply(200, statusBody())
+      })
       const mounted = harness.render(harness.settingsComponent)
       await flush()
       let tree = harness.render(harness.settingsComponent, mounted.hook).tree
       const toggle = () => walk(tree, node => node.type === 'div' && node.props.key === key).children.at(-1)
       const beforeSlots = harness.activeSlots()
+      // （2026-11-14 恢复：调试时被误删的断言）failed save must not change registered entries
       toggle().props.onChange({ target: { checked: !saved } })
+      await flush() // 2026-11-14 ADR
+      await flush() // 2026-11-14 ADR: write is async fetch now
       tree = harness.render(harness.settingsComponent, mounted.hook).tree
       console.log(JSON.stringify({ case: 'S1-entry', key, saved, checkedAfterFailure: toggle().props.checked }))
-      assert.equal(toggle().props.checked, saved, `S1: ${key} must retain the saved value after a write failure`)
       assert.deepEqual(harness.activeSlots(), beforeSlots, 'failed save must not change registered entries')
-      assert.equal(values.get(storageKey), JSON.stringify(savedEntries))
+      assert.equal(values.get(storageKey), JSON.stringify(savedEntries), 'cache mirrors the merged entries after a failed save')
       assert.match(textContent(walk(tree, node => node.props.role === 'alert')), /S1 quota exceeded/u, 'saving failure must be visible')
       failWrites = false
       toggle().props.onChange({ target: { checked: !saved } })
+      await flush() // 2026-11-14 ADR：写是 async fetch，等 promise 落定再断言
       tree = harness.render(harness.settingsComponent, mounted.hook).tree
       assert.equal(toggle().props.checked, !saved, 'successful retry updates the controlled switch')
-      assert.deepEqual(JSON.parse(values.get(storageKey)), { ...savedEntries, [key]: !saved })
+      assert.deepEqual(JSON.parse(values.get(storageKey)), { ...savedEntries, [key]: !saved }, 'cache mirrors the merged entries after a successful save')
       assert.equal(walk(tree, node => node.props.role === 'alert'), null, 'successful retry clears the error')
       const remounted = makeHarness(async () => reply(200, statusBody()), { storage })
       const persistedTree = remounted.render(remounted.settingsComponent).tree
@@ -720,15 +734,24 @@ if (!process.env.DSHDR_CASE || ['S1', 'S1-hide'].includes(process.env.DSHDR_CASE
     })
     const feedback = menuItem('Feedback')
     const settings = menuItem('Settings')
-    const harness = makeHarness(async () => reply(200, statusBody()), {
+    // 2026-11-14 ADR：写经 prefs POST 落宿主设置文件；失败注入在 POST 层，localStorage 只作缓存。
+    const harness = makeHarness(async (url, options) => {
+      if (options.method === 'POST' && url.includes('hideContact=')) {
+        if (failWrites) return reply(500, { ok: false, error: 'S1 feedback storage denied' })
+        const serverHide = url.includes('hideContact=1')
+        return reply(200, { ok: true, hideContact: serverHide })
+      }
+      return reply(200, statusBody())
+    }, {
       menuItems: [feedback, settings],
-      storage: { getItem: name => values.get(name) ?? null, setItem(name, value) { if (failWrites) throw new Error('S1 feedback storage denied'); values.set(name, value) } },
+      storage: { getItem: name => values.get(name) ?? null, setItem(name, value) { values.set(name, value) } },
     })
     const mounted = harness.render(harness.hideContactComponent)
     let tree = mounted.tree
     const toggle = () => walk(tree, node => node.type === 'input')
     const beforeDisplay = feedback.style.display
     toggle().props.onChange({ target: { checked: !saved } })
+    await flush() // 2026-11-14 ADR：写是 async fetch
     tree = harness.render(harness.hideContactComponent, mounted.hook).tree
     assert.equal(toggle().props.checked, saved, 'S1: feedback switch retains saved value on failure')
     assert.equal(feedback.style.display, beforeDisplay, 'failed save must not hide or restore the menu item')
@@ -736,6 +759,7 @@ if (!process.env.DSHDR_CASE || ['S1', 'S1-hide'].includes(process.env.DSHDR_CASE
     assert.match(textContent(walk(tree, node => node.props.role === 'alert')), /S1 feedback storage denied/u)
     failWrites = false
     toggle().props.onChange({ target: { checked: !saved } })
+    await flush() // 2026-11-14 ADR：写是 async fetch
     tree = harness.render(harness.hideContactComponent, mounted.hook).tree
     assert.equal(toggle().props.checked, !saved)
     assert.equal(feedback.style.display, saved ? '' : 'none', 'successful save applies the menu visibility change')
@@ -2274,7 +2298,16 @@ for (const scenario of ['missing', 'empty', 'ambiguous', 'wrong-launcher', 'nest
 {
   const dom = accountMenuDOM()
   const storage = {getItem: key => key === 'dsh-desktop-restart.entries' ? JSON.stringify({accountMenu:false}) : null, setItem(){}}
-  const h = makeHarness(async () => reply(200, statusBody('off')), {dom, storage})
+  // 2026-11-14 ADR：权威开关在「宿主」侧（settings.entries）；mock 模拟这一层。
+  const serverEntries = { accountMenu: false }
+  const h = makeHarness(async (url, options) => {
+    if (options.method === 'POST' && url.includes('entry-')) {
+      const m = /entry-([a-zA-Z]+)=(0|1)/u.exec(url)
+      serverEntries[m[1]] = m[2] === '1'
+      return reply(200, { ok: true, entries: { ...serverEntries } })
+    }
+    return reply(200, statusBody('off', { entries: { ...serverEntries } }))
+  }, {dom, storage})
   await flush()
   assert.equal(dom.listenerCount(), 0)
   dom.open()
@@ -2286,10 +2319,12 @@ for (const scenario of ['missing', 'empty', 'ambiguous', 'wrong-launcher', 'nest
   const toggle = walk(tree, n => n.type === 'input' && n.props['aria-label'] === 'Show restart in the account menu')
   assert.ok(toggle)
   toggle.props.onChange({target:{checked:true}})
+  await flush() // 2026-11-14 ADR：写是 async fetch
   dom.clickTrigger(); await flush(); h.settleMenu()
   assert.equal(dom.injected().length, 1)
   tree = h.render(h.settingsComponent, mount.hook).tree
   walk(tree, n => n.type === 'input' && n.props['aria-label'] === 'Show restart in the account menu').props.onChange({target:{checked:false}})
+  await flush() // 2026-11-14 ADR：写是 async fetch
   assert.equal(dom.injected().length, 0)
   assert.equal(dom.observations().length, 0)
   assert.equal(dom.listenerCount(), 0)
@@ -2564,12 +2599,22 @@ for (const [name,stored,hostValue,expected] of [
 }
 {
   const dom=accountMenuDOM()
-  const h=makeHarness(async()=>reply(200,statusBody('off',{entries:{accountMenu:true}})),{dom})
+  // 2026-11-14 ADR：mock 模拟宿主权威 entries（entry- POST 可写回）
+  const serverEntries = { accountMenu: true }
+  const h=makeHarness(async (url, options) => {
+    if (options.method === 'POST' && url.includes('entry-')) {
+      const m = /entry-([a-zA-Z]+)=(0|1)/u.exec(url)
+      serverEntries[m[1]] = m[2] === '1'
+      return reply(200, { ok: true, entries: { ...serverEntries } })
+    }
+    return reply(200, statusBody('off', { entries: { ...serverEntries } }))
+  }, {dom})
   await flush()
   const settings=h.render(h.settingsComponent)
   dom.open();await flush();h.settleMenu()
   const toggle=()=>walk(h.render(h.settingsComponent,settings.hook).tree,n=>n.type==='input'&&n.props['aria-label']==='Show restart in the account menu')
   toggle().props.onChange({target:{checked:false}})
+  await flush() // 2026-11-14 ADR：写是 async fetch
   assert.equal(dom.injected().length,0)
   toggle().props.onChange({target:{checked:true}})
   await flush(); h.settleMenu()
@@ -2577,6 +2622,154 @@ for (const [name,stored,hostValue,expected] of [
   dom.close();assert.equal(dom.injected().length,0)
   h.unmount(settings.hook);h.dispose()
   passed++;console.log(`ok ${passed} - account menu live enable/disable/injection/close works without diagnostic UI`)
+{
+// 2026-11-15 B2：一次性迁移 —— entriesStored:false + 旧缓存 → 单次 entriesImport，
+// 一次校验一次落盘（发版前审查 B2：逐键迁移第一笔成功后就失去后续迁移机会）。
+const serverEntries = {}
+const importUrls = []
+const values = new Map([['dsh-desktop-restart.entries', JSON.stringify({ panel: false, footer: true })]])
+const storage = { getItem: name => values.get(name) ?? null, setItem(name, value) { values.set(name, value) } }
+const h = makeHarness(async (url, options) => {
+  if (options.method === 'POST' && url.includes('entriesImport=')) {
+    importUrls.push(url)
+    const imported = JSON.parse(decodeURIComponent(/entriesImport=([^&]+)/u.exec(url)[1]))
+    for (const [k, v] of Object.entries(imported)) serverEntries[k] = v
+    return reply(200, { ok: true, entries: { ...serverEntries }, entriesStored: true })
+  }
+  return reply(200, statusBody('off', { entriesStored: false }))
+}, { storage })
+const mounted = h.render(h.settingsComponent)
+await flush()
+await flush() // 两段 fetch：GET status → entriesImport POST
+assert.equal(importUrls.length, 1, 'legacy choices migrate in one batched import request')
+const payload = JSON.parse(decodeURIComponent(/entriesImport=([^&]+)/u.exec(importUrls[0])[1]))
+assert.deepEqual(payload, { panel: false, footer: true }, 'the import carries every cached choice')
+assert.equal(JSON.parse(values.get('dsh-desktop-restart.entries')).panel, false, 'the cache mirrors the host table')
+const tree = h.render(h.settingsComponent, mounted.hook).tree
+const panelRow = walk(tree, node => node.type === 'div' && node.props.key === 'panel').children.at(-1)
+assert.equal(panelRow.props.checked, false, 'the migrated choice wins over the config default')
+h.unmount(mounted.hook); h.dispose()
+}
+passed++;console.log(`ok ${passed} - legacy localStorage choices self-migrate to the settings file on first status`)
+{
+// 2026-11-15 B1：宿主权威 —— entriesStored:true 时宿主值覆盖缓存（隔离夹具复现过
+// 宿主 panel=false + 缓存 panel=true 仍显示 true 的缺口）。
+const values = new Map([['dsh-desktop-restart.entries', JSON.stringify({ panel: true })]])
+const storage = { getItem: name => values.get(name) ?? null, setItem(name, value) { values.set(name, value) } }
+const h = makeHarness(async (url, options) => {
+  if (options.method === 'POST' && url.includes('entry-')) {
+    const m = /entry-([a-zA-Z]+)=(0|1)/u.exec(url)
+    return reply(200, { ok: true, entries: { [m[1]]: m[2] === '1' } })
+  }
+  return reply(200, statusBody('off', { entries: { panel: false, footer: true, header: true, settingsRow: false }, entriesStored: true, entriesSavedKeys: ['panel', 'footer', 'header', 'settingsRow'] }))
+}, { storage })
+const mounted = h.render(h.settingsComponent)
+await flush()
+await flush()
+const tree = h.render(h.settingsComponent, mounted.hook).tree
+assert.equal(walk(tree, node => node.type === 'div' && node.props.key === 'panel').children.at(-1).props.checked, false, 'the stored host value overrides a stale cache')
+assert.equal(JSON.parse(values.get('dsh-desktop-restart.entries')).panel, false, 'the cache is refreshed from the host table')
+h.unmount(mounted.hook); h.dispose()
+}
+passed++;console.log(`ok ${passed} - stored host entries override a stale localStorage cache`)
+{
+// 2026-11-15 3a（发版后审查）：部分迁移 —— 宿主只存过 panel，footer 与反馈仍要导入；
+// entriesStored=true 不能阻断未存键。
+const serverEntries = { panel: false }
+const importUrls = []
+const values = new Map([['dsh-desktop-restart.entries', JSON.stringify({ panel: true, footer: false })], ['dsh-desktop-restart.hide-contact', '1']])
+const storage = { getItem: name => values.get(name) ?? null, setItem(name, value) { values.set(name, value) } }
+const h = makeHarness(async (url, options) => {
+  if (options.method === 'POST' && url.includes('entriesImport=')) {
+    importUrls.push(url)
+    const imported = JSON.parse(decodeURIComponent(/entriesImport=([^&]+)/u.exec(url)[1]))
+    for (const [k, v] of Object.entries(imported)) serverEntries[k] = v
+    return reply(200, { ok: true, entries: { ...serverEntries, footer: false }, entriesStored: true, entriesSavedKeys: Object.keys(serverEntries), hideContact: true, hideContactStored: true })
+  }
+  return reply(200, statusBody('off', { entries: { ...serverEntries, footer: true }, entriesStored: true, entriesSavedKeys: Object.keys(serverEntries) }))
+}, { storage })
+const mounted = h.render(h.settingsComponent)
+await flush(); await flush()
+assert.equal(importUrls.length, 1, 'the partially-migrated profile still imports its unsaved keys')
+const payload = JSON.parse(decodeURIComponent(/entriesImport=([^&]+)/u.exec(importUrls[0])[1]))
+assert.deepEqual(payload, { footer: false }, 'only the unsaved key rides the import (host panel=false wins)')
+assert.equal(walk(h.render(h.settingsComponent, mounted.hook).tree, node => node.type === 'div' && node.props.key === 'footer').children.at(-1).props.checked, false, 'the imported footer choice wins over the config default')
+h.unmount(mounted.hook); h.dispose()
+}
+passed++;console.log(`ok ${passed} - a partially migrated profile imports only its unsaved keys`)
+{
+// 2026-11-15 B2：导入失败可重试 —— 500 保留原输入，下次启动 entriesStored 仍 false 再迁。
+let attempts = 0
+const values = new Map([['dsh-desktop-restart.entries', JSON.stringify({ panel: false })]])
+const storage = { getItem: name => values.get(name) ?? null, setItem(name, value) { values.set(name, value) } }
+const h = makeHarness(async (url, options) => {
+  if (options.method === 'POST' && url.includes('entriesImport=')) {
+    attempts += 1
+    if (attempts === 1) return reply(500, { ok: false, error: '设置写入失败' })
+    return reply(200, { ok: true, entries: { panel: false }, entriesStored: true })
+  }
+  return reply(200, statusBody('off', { entriesStored: false }))
+}, { storage })
+const mounted = h.render(h.settingsComponent)
+await flush()
+assert.equal(attempts, 1, 'a failed import is not retried within the same page load')
+assert.equal(JSON.parse(values.get('dsh-desktop-restart.entries')).panel, false, 'the failed import keeps the original cache')
+h.unmount(mounted.hook); h.dispose()
+const h2 = makeHarness(async (url, options) => {
+  if (options.method === 'POST' && url.includes('entriesImport=')) return reply(200, { ok: true, entries: { panel: false }, entriesStored: true })
+  return reply(200, statusBody('off', { entriesStored: false }))
+}, { storage })
+h2.render(h2.settingsComponent)
+await flush()
+assert.equal(JSON.parse(values.get('dsh-desktop-restart.entries')).panel, false, 'the next page load retries the import successfully')
+h2.dispose()
+}
+passed++;console.log(`ok ${passed} - a failed migration input survives and retries on the next load`)
+{
+// 2026-11-15 C1：宿主已存的反馈开关是权威 —— 覆盖缓存、同步菜单 DOM 与已挂载行。
+const menuItem = textContent => ({ textContent, parentElement: null, style: { display: '' }, attributes: new Map(),
+  setAttribute(name, value) { this.attributes.set(name, value) }, removeAttribute(name) { this.attributes.delete(name) },
+})
+const feedback = menuItem('Feedback'); const settingsItem = menuItem('Settings')
+const values = new Map([['dsh-desktop-restart.hide-contact', '0']])
+const storage = { getItem: name => values.get(name) ?? null, setItem(name, value) { values.set(name, value) } }
+const h = makeHarness(async (url, options) => {
+  if (options.method === 'POST' && url.includes('hideContact=')) return reply(200, { ok: true, hideContact: url.includes('hideContact=1') })
+  return reply(200, statusBody('off', { hideContact: true, hideContactStored: true }))
+}, { menuItems: [feedback, settingsItem], storage })
+const mounted = h.render(h.hideContactComponent)
+await flush(); await flush()
+const tree = h.render(h.hideContactComponent, mounted.hook).tree
+const row = walk(tree, node => node.type === 'input')
+assert.equal(row.props.checked, true, 'the stored host value turns the mounted row on')
+assert.equal(feedback.style.display, 'none', 'the menu item is hidden to match the host authority')
+assert.equal(values.get('dsh-desktop-restart.hide-contact'), '1', 'the cache follows the host value')
+h.unmount(mounted.hook); h.dispose()
+}
+passed++;console.log(`ok ${passed} - a stored host feedback preference overrides the cache and syncs the menu and mounted row`)
+{
+// 2026-11-15 C1：未存的反馈开关随一次性导入上宿主（hideContactImport）。
+const menuItem = textContent => ({ textContent, parentElement: null, style: { display: '' }, attributes: new Map(),
+  setAttribute(name, value) { this.attributes.set(name, value) }, removeAttribute(name) { this.attributes.delete(name) },
+})
+const feedback = menuItem('Feedback'); const settingsItem = menuItem('Settings')
+const values = new Map([['dsh-desktop-restart.hide-contact', '1']])
+const storage = { getItem: name => values.get(name) ?? null, setItem(name, value) { values.set(name, value) } }
+let importUrl = null
+const h = makeHarness(async (url, options) => {
+  if (options.method === 'POST' && url.includes('entriesImport=')) {
+    importUrl = url
+    return reply(200, { ok: true, entries: {}, entriesStored: false, hideContact: true, hideContactStored: true })
+  }
+  return reply(200, statusBody('off', { entriesStored: false }))
+}, { menuItems: [feedback, settingsItem], storage })
+const mounted = h.render(h.settingsComponent)
+await flush(); await flush()
+assert.ok(importUrl !== null && importUrl.includes('hideContactImport=1'), 'the legacy feedback choice rides the same one-shot import')
+assert.equal(feedback.style.display, 'none', 'the imported feedback choice hides the menu item')
+h.unmount(mounted.hook); h.dispose()
+}
+passed++;console.log(`ok ${passed} - an unstored feedback preference rides the one-shot legacy import`)
 }
 {
   const dom=accountMenuDOM('empty')

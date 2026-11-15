@@ -17,7 +17,7 @@ function makeProcess(pid, parentPid, path, createdAt, commandLine = 'app.exe') {
   return { pid, parentPid, path, createdAt: new Date(createdAt).toISOString(), commandLine }
 }
 
-function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failLaunchWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false, newHostListener = true, incompleteNewHostRow = false, windowHandle = null, windowForeground = false, relaunchGoneAfterVerify = false, relaunchLogPath = '', relaunchSpawnThrows = false, relaunchAttempts = 1, captureChildOutput = false }) {
+function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failLaunchWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false, newHostListener = true, incompleteNewHostRow = false, windowHandle = null, windowForeground = false, relaunchGoneAfterVerify = false, relaunchLogPath = '', relaunchSpawnThrows = false, relaunchAttempts = 1, captureChildOutput = false, taskkillFails = false, reuseMainAtKill = false, killReadIncomplete = false, killTableEmpty = false, receiptDuringProbe = false, probeClockAdvanceMs = 0, probeKillErrors = null }) {
   let clock = Date.now()
   const main = makeProcess(100, 1, targetExe, clock - 20_000, '"C:\\DSH\\app.exe" --user-data-dir=C:\\profile-A')
   const host = makeProcess(101, 100, targetExe, clock - 15_000, '"C:\\DSH\\app.exe" --expose-internals')
@@ -27,6 +27,7 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
   const foreignHost = makeProcess(201, 200, foreignPath, clock - 55_000, '"C:\\DSH\\app.exe" --expose-internals')
   const processes = new Map([main, host, helper, oldHostChild, foreignMain, foreignHost].map((entry) => [entry.pid, entry]))
   const killed = []
+const taskkillCalls = []
   const noticesSent = []
   const notes = []
   const launchEnvs = []
@@ -59,6 +60,10 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
       }
       if (command === 'taskkill') {
         const pid = Number(args[args.indexOf('/PID') + 1])
+        // 2026-11-15 A2：独立命令调用记录——先记录再谈成败，killed 只在真成功后记。
+        taskkillCalls.push(pid)
+        // 2026-11-14 P2：taskkill 失败注入——核验通过但执行失败，沿原 stop-failed 语义。
+        if (taskkillFails) throw Object.assign(new Error('fixture taskkill denied'), { code: 'EACCES' })
         killed.push(pid)
         processes.delete(pid)
         if (authCookieFailure && !keepOldHost && pid === 100) { processes.delete(101); processes.delete(103) }
@@ -73,12 +78,21 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
       if (windowHandle !== null && (command === 'powershell.exe' || command === 'pwsh.exe')) {
         const encoded = String(args[args.indexOf('-EncodedCommand') + 1] ?? '')
         if (Buffer.from(encoded, 'base64').toString('utf16le').includes('MainWindowHandle')) {
+          // 2026-11-15 R06 复核回归：探测是同步 PowerShell 调用、耗时以秒计——把时钟
+          // 推进 probeClockAdvanceMs 模拟；receiptDuringProbe 让有效双回执恰好在探测期间落盘。
+          if (probeClockAdvanceMs > 0) clock += probeClockAdvanceMs
+          if (receiptDuringProbe && operationFiles.has(opPath)) {
+            const previous = JSON.parse(operationFiles.get(opPath))
+            operationFiles.set(opPath, JSON.stringify({ ...previous, profileId: 'engine-fixture', readyHostPid: 301, hostReadyAt: new Date(clock - probeClockAdvanceMs - 2000).toISOString(), clientReadyAt: new Date(clock - 500).toISOString() }))
+          }
           return JSON.stringify({ handle: windowHandle, foreground: windowForeground })
         }
       }
       if (command === 'powershell.exe' || command === 'pwsh.exe') {
         cimReads++
-        if(disappearBeforeKill && cimReads===3) processes.delete(100)
+        // 2026-11-14 P2：第 2 次 CIM 读取即杀前最终核验（第 1 次是 verify 快照），
+        // 在此注入退出；旧中间查询已合并，编号不再是 3。
+        if(disappearBeforeKill && cimReads===2) processes.delete(100)
         const rows = [...processes.values()].filter((entry) => win32.basename(entry.path).toLowerCase() === 'app.exe')
         const result = rows.map((entry) => ({
           ProcessId: entry.pid,
@@ -93,6 +107,10 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
         // 于是「回执已落盘却读不到」被误报成结果未知 —— 正是真机第二次的形态。
         // 动手前的 verify/stop 阶段新宿主还不存在，所以不影响前置流程。
         if (incompleteNewHostRow) delete result.find((entry) => entry.ProcessId === 301)?.CreatedAt
+        // 2026-11-14 P2：杀前核验负例注入（第 2 次读取起生效，verify 读取不受影响）。
+        if (reuseMainAtKill && cimReads >= 2) { const reused = result.find((entry) => entry.ProcessId === 100); if (reused) reused.CreatedAt = new Date(clock + 5000).toISOString() }
+        if (killReadIncomplete && cimReads >= 2) { const row = result.find((entry) => entry.ProcessId === 100); if (row) delete row.CreatedAt }
+        if (killTableEmpty && cimReads >= 2) return '[]'
         return JSON.stringify(result)
       }
       throw new Error(`Unexpected process command in fake: ${command}`)
@@ -128,6 +146,8 @@ function runHelperScenario({ foreignPath = targetExe, foreignListener = true, st
     argv: [],
     env: { ELECTRON_RUN_AS_NODE: '1', DSH_DESKTOP_RESTART_ID: 'old', ...(privateExe ? {DSH_DESKTOP_RESTART_EXE:targetExe} : {}) },
     kill(pid) {
+      // 2026-11-15 A2：按 PID 注入探活错误码（EPERM/EACCES = 权限拒绝，非 ESRCH）。
+      if (probeKillErrors !== null && probeKillErrors[Number(pid)] !== undefined) { const error = new Error('probe denied'); error.code = probeKillErrors[Number(pid)]; throw error }
       // relaunchGoneAfterVerify：第 1 次 kill(300,0) 对应拉起确认（verifyMs 后仍活着），
       // 第 2 次对应 unknown 收尾的下落核查 —— 让它在收尾时报告新实例已退出。
       if (Number(pid) === 300 && relaunchGoneAfterVerify) {
@@ -242,7 +262,7 @@ if (captureChildOutput) handoff.captureChildOutput = true
   if (badHandoff) handoff.mainPid=0
   if (throwCore) handoff.mainPid={valueOf(){throw new Error('fixture unexpected core failure')}}
   let coreError=null
-  return helperApi.performRestart(handoff, (line) => notes.push(line)).catch(error=>{if(!throwCore)throw error;coreError=error.message}).then(() => ({ coreError, noticesSent, noticeRecords:[...operationFiles.entries()].filter(([file])=>win32.basename(file).startsWith('notice-') && file.endsWith('.json')).map(([,value])=>JSON.parse(value)), originalOp, rawOp:operationFiles.get(opPath), lockPresent:operationFiles.has(lockPath), cookieHealth:authCookieFailure?JSON.parse(operationFiles.get('C:\\virtual\\health.json')):null, killed, notes, launchEnvs, launchCalls, openCalls, closeCalls, processes: [...processes.keys()], listeners: [...listeners], operation: legacyHandoff ? null : (opReadError === 'json' ? null : JSON.parse(operationFiles.get(opPath))), cimReadResult: helperApi.queryApplicationProcesses('app.exe') }))
+  return helperApi.performRestart(handoff, (line) => notes.push(line)).catch(error=>{if(!throwCore)throw error;coreError=error.message}).then(() => ({ coreError, noticesSent, noticeRecords:[...operationFiles.entries()].filter(([file])=>win32.basename(file).startsWith('notice-') && file.endsWith('.json')).map(([,value])=>JSON.parse(value)), originalOp, rawOp:operationFiles.get(opPath), lockPresent:operationFiles.has(lockPath), cookieHealth:authCookieFailure?JSON.parse(operationFiles.get('C:\\virtual\\health.json')):null, killed, taskkillCalls, notes, launchEnvs, launchCalls, openCalls, closeCalls, processes: [...processes.keys()], listeners: [...listeners], operation: legacyHandoff ? null : (opReadError === 'json' ? null : JSON.parse(operationFiles.get(opPath))), cimReadResult: helperApi.queryApplicationProcesses('app.exe') }))
 }
 
 // Same image and same executable, different profile: only the old host tree is eligible.
@@ -275,12 +295,32 @@ const foreignListenerOnly = await runHelperScenario({
 assert.equal(foreignListenerOnly.launchEnvs.length, 1, 'readiness case reaches new-instance launch')
 assert(!foreignListenerOnly.notes.some((line) => line.includes('restart complete')), 'another profile listener is not readiness')
 assert.equal(foreignListenerOnly.operation.reason,'ready-unconfirmed','a foreign listener cannot establish host/client readiness')
+// 2026-11-14 P7：等待回执的耗时计入 readyWait，不再挂在 launch 名下。
+assert.ok(foreignListenerOnly.operation.stages.readyWait >= 500, 'P7: the readiness wait is measured in readyWait')
+assert.ok(foreignListenerOnly.operation.stages.launch <= 5, 'P7: launch covers spawn + survival observation only')
+
+// 2026-11-15 R06 复核复位回归：探测期间落盘的有效双回执必须判成功，ready 计时
+// 包含探测耗时；无回执的对照仍为 unknown。
+const probeReceipt = await runHelperScenario({ foreignListener: false, startNewHost: true, acknowledgeRecovery: false, windowHandle: 4321, receiptDuringProbe: true, probeClockAdvanceMs: 1500 })
+assert.equal(probeReceipt.operation.result, 'ok', 'a receipt landing during the window probe is success, not unknown')
+assert.equal(probeReceipt.operation.reason, 'ready-without-port')
+assert.ok(probeReceipt.notes.some((line) => line.includes('restart complete without a port')), 'the restored recheck keeps the completion note')
+assert.ok(probeReceipt.operation.stages.ready >= 1500, 'ready covers the probe duration')
+const probeSilent = await runHelperScenario({ foreignListener: false, startNewHost: true, acknowledgeRecovery: false, windowHandle: 4321, probeClockAdvanceMs: 1500 })
+assert.equal(probeSilent.operation.result, 'unknown', 'no receipt during the probe still yields unknown')
+assert.equal(probeSilent.operation.reason, 'ready-unconfirmed')
+assert.ok(probeSilent.operation.stages.ready >= 1500, 'the silent probe is still measured inside ready')
 
 // Both verified transport and matching host/client receipts are required.
 const newHostReady = await runHelperScenario({ foreignPath: targetExe, foreignListener: false, startNewHost: true })
 assert(newHostReady.notes.some((line) => line.includes('acknowledged recovery on port 19001')), 'nonce-bound host and client acknowledge the verified transport')
 assert.equal(newHostReady.launchEnvs[0].DSH_DESKTOP_RESTART_ID, 'restart-test-123', 'handoff nonce reaches the new host environment')
 assert.equal(newHostReady.launchEnvs[0].ELECTRON_RUN_AS_NODE, undefined, 'Node mode is still removed')
+// 2026-11-14 P7：launch 只覆盖拉起与存活观察；等待回执单列 readyWait。
+assert.equal(typeof newHostReady.operation.stages.readyWait, 'number', 'P7: readiness wait is its own stage')
+assert.ok(newHostReady.operation.stages.readyWait >= 0)
+assert.equal(typeof newHostReady.operation.stages.launch, 'number', 'P7: launch timing kept')
+assert.equal(typeof newHostReady.operation.stages.ready, 'number', 'P7: closure timing kept')
 
 const listenerWithoutReceipt=await runHelperScenario({foreignListener:false,startNewHost:true,acknowledgeRecovery:false})
 assert.equal(listenerWithoutReceipt.operation.result,'unknown')
@@ -383,6 +423,42 @@ const exitedBeforeKill=await runHelperScenario({foreignListener:false,startNewHo
 assert.equal(exitedBeforeKill.operation.result,'ok')
 assert.ok(!exitedBeforeKill.killed.includes(100),'an already-exited main does not require taskkill')
 
+// 2026-11-14 P2：杀前最终核验的四种结局——匹配才杀、已退出跳过、复用/不可读拒绝、taskkill 失败沿原语义。
+const reuseMain=await runHelperScenario({foreignListener:false,startNewHost:true,reuseMainAtKill:true})
+assert.equal(reuseMain.operation.result,'failed')
+assert.equal(reuseMain.operation.reason,'identity-changed','a reused PID is refused, not killed')
+assert.ok(!reuseMain.killed.includes(100),'a reused PID is never killed')
+const killReadBad=await runHelperScenario({foreignListener:false,startNewHost:true,killReadIncomplete:true})
+assert.equal(killReadBad.operation.result,'failed')
+assert.equal(killReadBad.operation.reason,'identity-changed','an unreadable table never authorizes a kill')
+assert.ok(!killReadBad.killed.includes(100),'an unreadable table is never treated as exited')
+const emptyKillTable=await runHelperScenario({foreignListener:false,startNewHost:true,killTableEmpty:true})
+assert.equal(emptyKillTable.operation.result,'failed')
+assert.equal(emptyKillTable.operation.reason,'identity-changed','an alive PID behind an empty table is refused')
+assert.ok(!emptyKillTable.killed.includes(100),'an alive PID is never treated as exited')
+const killFails=await runHelperScenario({foreignListener:false,startNewHost:true,taskkillFails:true})
+assert.equal(killFails.operation.result,'failed')
+assert.equal(killFails.operation.reason,'stop-failed','verified-but-failed keeps the original stop-failed semantics')
+assert.ok(!killFails.killed.includes(100),'a failed taskkill does not claim a kill')
+assert(killFails.notes.some((line) => line.includes('could not be ended')),'verified-but-failed is reported distinctly')
+assert.deepEqual(killFails.taskkillCalls, [100], 'a verified kill actually reaches taskkill')
+// 2026-11-15 A2：空表 + ESRCH 对照——杀前核验时目标已从表中消失、信号 0 返回
+// ESRCH，才允许跳过 kill 继续。
+const esrchEmpty = await runHelperScenario({ foreignListener: false, startNewHost: true, disappearBeforeKill: true, killTableEmpty: true })
+assert.equal(esrchEmpty.operation.result, 'ok', 'empty table + ESRCH-confirmed absence proceeds without a kill')
+assert.deepEqual(esrchEmpty.taskkillCalls, [], 'an ESRCH-confirmed exit never reaches taskkill')
+// 空表 + EPERM 对照——权限错误必须按无法核验拒绝，不得当作已退出。
+const epermEmpty = await runHelperScenario({ foreignListener: false, startNewHost: true, disappearBeforeKill: true, killTableEmpty: true, probeKillErrors: { 100: 'EPERM' } })
+assert.equal(epermEmpty.operation.result, 'failed', 'an unverifiable PID behind an empty table is refused')
+assert.equal(epermEmpty.operation.reason, 'identity-changed')
+assert.deepEqual(epermEmpty.taskkillCalls, [], 'an unverifiable PID never reaches taskkill')
+// 等待循环收紧：taskkill 成功但退出无法确认（EPERM）→ stop-failed，不得盲拉起。
+const epermWait = await runHelperScenario({ foreignListener: false, startNewHost: true, probeKillErrors: { 100: 'EPERM' } })
+assert.equal(epermWait.operation.result, 'failed', 'taskkill success without a confirmable exit still aborts')
+assert.equal(epermWait.operation.reason, 'stop-failed')
+assert.deepEqual(epermWait.taskkillCalls, [100], 'the verified kill did run')
+assert.ok(epermWait.notes.some((line) => line.includes('did not confirm exit')), 'the stop wait distinguishes unverifiable from exited')
+
 // 2026-11-03 真机第二次：新宿主回执已经落盘，但轮询里因为进程表整表作废而
 // 建不出进程树 → 回执从来没被读到 → 判成结果未知（日志：判定 08:43:54.908，
 // clientReadyAt 08:43:54.461，只差 60ms）。关闸后必须补读一次回执。
@@ -476,11 +552,13 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '2') {
     existsSync(file) { return memory.has(file) },
   }
   const store = api.createNoticeStore({ dir:'E:\\fixture-notices', profileId:'profile-A', io, send(record, paths) { sent.push({record,paths}); return {status:'failed',code:'notifications-disabled'} } })
-  const operation = { id:'op-fixture', result:'failed', reason:'stop-failed', phase:'stop', commandLine:'secret-token', path:'C:\\private\\app.exe', stages:{stop:35}, busy:true }
+  const operation = { id:'op-fixture', result:'failed', reason:'stop-failed', phase:'stop', commandLine:'secret-token', path:'C:\\private\\app.exe', stages:{stop:35, bogusKey:9}, busy:true }
   store.ensure(operation); store.ensure(operation)
   assert.equal(sent.length,1,'one failed operation submits once')
   assert.equal(store.list().length,1,'one durable failure record')
   assert.equal(store.list()[0].unread,true)
+  assert.equal(Object.hasOwn(store.list()[0].details.stages,'bogusKey'),false,'unknown stage keys are filtered from diagnostics')
+  assert.equal(store.list()[0].details.stages.readyWait,undefined,'readyWait enters diagnostics only from real runs')
   assert.equal(store.list()[0].delivery.status,'failed')
   const raw = [...memory.values()].join('\n')
   assert.doesNotMatch(raw,/secret-token|private|commandLine/u,'persisted public diagnostics must be redacted')

@@ -24,10 +24,17 @@ for(const iso of ['2026-10-29T12:37:33.122Z',null,'','invalid-date',undefined]){
 
 {
   let reads=0,writes=0,stored=null
+const serverEntries={headerRefresh:false} // 2026-11-14 ADR：权威开关在宿主侧
   const h=makeHarness(async(_url,options)=>{
-    if(options.method==='POST')writes++
-    else reads++
-    return reply(200,statusBody())
+if(options.method==='POST'){
+  if(String(_url).includes('entry-')){
+    const m=/entry-([a-zA-Z]+)=(0|1)/u.exec(String(_url))
+    serverEntries[m[1]]=m[2]==='1'
+    return reply(200,{ok:true,entries:{...serverEntries}})
+  }
+  writes++ // 2026-11-14 ADR：entry 开关走 POST 但不算「提交重启/偏好」——本断言只盯重启类写入
+}else reads++
+return reply(200,statusBody('off',{entries:{...serverEntries}}))
   },{storage:{getItem:key=>key==='dsh-desktop-restart.entries'?stored:null,setItem(key,value){if(key==='dsh-desktop-restart.entries')stored=value}}})
   const header=h.render(h.headerComponent),settings=h.render(h.settingsComponent);await flush()
   const renderHeader=()=>h.render(h.headerComponent,header.hook).tree
@@ -39,6 +46,7 @@ for(const iso of ['2026-10-29T12:37:33.122Z',null,'','invalid-date',undefined]){
   assert.equal(setting().props.checked,false)
   assert.doesNotMatch(textContent(renderSettings()),/Health and diagnostics|Account menu diagnostic|健康与诊断|账号菜单诊断/)
   setting().props.onChange({target:{checked:true}})
+await flush() // 2026-11-14 ADR：写是 async fetch
   assert.equal(setting().props.checked,true)
   const button=refresh();assert.ok(button,'enabling is immediate, without page reload')
   assert.ok(walk(button,node=>node.props?.['data-refresh-status-icon']==='1'))
@@ -46,6 +54,7 @@ for(const iso of ['2026-10-29T12:37:33.122Z',null,'','invalid-date',undefined]){
   assert.equal(reads,before+1,'click invokes the actual shared status refresh')
   assert.equal(writes,0,'refresh never submits restart or preferences')
   setting().props.onChange({target:{checked:false}})
+await flush() // 2026-11-14 ADR：写是 async fetch
   assert.equal(refresh(),undefined,'disabling removes it immediately')
   assert.equal(JSON.parse(stored).headerRefresh,false)
   h.unmount(header.hook);h.unmount(settings.hook);h.dispose();uiCleanupChecks++

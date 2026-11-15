@@ -316,6 +316,8 @@ const deleteStatus = await deleteOn.request('/dsh-desktop-restart/api/status', '
 assert.equal(deleteStatus.body.sweepDelete, true, 'status must carry sweepDelete so the UI reflects the stored switch')
 results.push({ case: 'status-carries-sweep-delete-flag', passed: true })
 
+
+
 const missingRestart = await boot({ restartId: 'missing-operation' })
 const missingStatus = await missingRestart.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
 assert.equal(missingStatus.body.restartOp.result, 'unknown')
@@ -387,6 +389,83 @@ assert.equal(invalidResultStatus.body.restartOp.result, 'unknown', 'a result-les
 assert.equal(invalidResultStatus.body.restartOp.reason, 'helper-exited')
 assert.equal(invalidResultStatus.body.restartOp.busy, false, 'the operation is released, not stuck pending')
 results.push({ case: 'result-less-record-falls-back-to-helper-exited-unknown', passed: true })
+
+// 2026-11-14 P7：OP_STAGES 白名单放行 readyWait、滤除未知键；旧记录（无 readyWait）照常可读。
+const stagesFilterId = 'stages-filter'
+files.set(missingRestart.module.namespace.__test.opFileOf(stagesFilterId), JSON.stringify({
+  id: stagesFilterId, schema: 1, phase: 'done', result: 'ok', reason: null, pid: 777,
+  hostPid: 200, helperIdentity: reusedIdentity, helperVerified: true,
+  startedAt: new Date().toISOString(), stages: { verify: 5, readyWait: 7, bogus: 9 },
+}))
+const stagesFilterHost = await boot({ restartId: stagesFilterId, processList: [{ ...reusedIdentity, createdAt: '2026-10-22T00:01:00.000Z' }] })
+const stagesFilterStatus = await stagesFilterHost.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+const stagesOut = stagesFilterStatus.body.restartOp.stages
+assert.equal(stagesOut.readyWait, 7, 'readyWait passes the OP_STAGES whitelist')
+assert.equal(stagesOut.verify, 5, 'old records without readyWait stay readable')
+assert.equal(Object.hasOwn(stagesOut, 'bogus'), false, 'unknown stage keys are filtered from the summary')
+results.push({ case: 'op-stages-whitelist-adds-ready-wait-and-filters-unknown', passed: true })
+
+// 2026-11-14 ADR：入口开关落宿主设置文件（强杀不丢）。entry-<key>=1|0 写 settings.entries，
+// status 经 readEntries 合并回读；非法值 400。
+const entryStore = await boot({ restartId: 'entry-store' })
+const entryPost = await entryStore.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?entry-footer=0')
+assert.equal(entryPost.status, 200, 'entry POST is accepted')
+assert.equal(entryPost.body.ok, true)
+assert.equal(entryPost.body.entries.footer, false, 'the posted entry is echoed back merged')
+const entrySettings = JSON.parse(files.get(profileSettingsPath))
+assert.equal(entrySettings.entries.footer, false, 'the entry lands in the profile settings file (survives hard kills)')
+const entryStatus = await entryStore.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+assert.equal(entryStatus.body.entries.footer, false, 'status reflects the stored entry override')
+const entryBad = await entryStore.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?entry-footer=2')
+assert.equal(entryBad.status, 400, 'a non-0/1 entry value is rejected')
+assert.equal(entryStatus.body.entriesStored, true, 'entriesStored flips true once an override exists')
+// 迁移缺口：干净的 profile 上 entriesStored 必须是 false（客户端据此自迁移旧缓存）。
+files.delete(profileSettingsPath) // 共享 stateDir：先清掉前面用例写入的 settings 再建「干净」boot
+const freshEntries = await boot({ restartId: 'entries-fresh' })
+const freshStatus = await freshEntries.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+assert.equal(freshStatus.body.entriesStored, false, 'a clean profile reports entriesStored=false')
+// hideContact：同库迁移的隐藏反馈开关（落盘 + status 回读 + 非法值 400）。
+const hidePost = await entryStore.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?hideContact=1')
+assert.equal(hidePost.status, 200, 'hideContact POST is accepted')
+assert.equal(hidePost.body.hideContact, true)
+const hideSettings = JSON.parse(files.get(profileSettingsPath))
+assert.equal(hideSettings.hideContact, true, 'hideContact lands in the settings file')
+const hideStatus = await entryStore.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+assert.equal(hideStatus.body.hideContact, true, 'status reflects the stored hideContact')
+const hideBad = await entryStore.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?hideContact=2')
+assert.equal(hideBad.status, 400, 'a non-0/1 hideContact value is rejected')
+results.push({ case: 'entry-switches-persist-to-profile-settings-file', passed: true })
+
+// 2026-11-15 B3：prefs 写入合同收紧 —— 未知键/entry-command/混合请求/坏 JSON 一律 400；
+// entriesImport 只填宿主尚未保存的键（重复导入安全）；hideContactImport 在已存时被忽略。
+files.delete(profileSettingsPath)
+const freshImport = await boot({ restartId: 'entries-import-fresh' })
+const importBad = await freshImport.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?entriesImport=%7Bbroken')
+assert.equal(importBad.status, 400, 'a broken entriesImport payload is rejected')
+const importCmd = await freshImport.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?entry-command=1')
+assert.equal(importCmd.status, 400, 'entry-command is not writable (config-owned)')
+const importUnknown = await freshImport.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?entry-bogus=1')
+assert.equal(importUnknown.status, 400, 'unknown entry keys are rejected, not ignored')
+const importMixed = await freshImport.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?entry-panel=1&entry-footer=0')
+assert.equal(importMixed.status, 400, 'two entry keys in one request are rejected')
+const importMixHide = await freshImport.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?entry-panel=1&hideContact=0')
+assert.equal(importMixHide.status, 400, 'entry + hideContact in one request is rejected')
+const importFirst = await freshImport.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?entriesImport=' + encodeURIComponent(JSON.stringify({ panel: false, footer: true, bogus: true })) + '&hideContactImport=0')
+assert.equal(importFirst.status, 400, 'an unknown key inside the import payload is rejected')
+const importOk = await freshImport.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?entriesImport=' + encodeURIComponent(JSON.stringify({ panel: false, footer: true })) + '&hideContactImport=0')
+assert.equal(importOk.status, 200, 'the import is accepted')
+assert.equal(JSON.parse(files.get(profileSettingsPath)).entries.panel, false, 'imported entries land in the settings file')
+assert.equal(JSON.parse(files.get(profileSettingsPath)).hideContact, false, 'hideContactImport lands when not yet stored')
+const importSecond = await freshImport.request('/dsh-desktop-restart/api/prefs', 'POST', '/dsh-desktop-restart/api/prefs?entriesImport=' + encodeURIComponent(JSON.stringify({ panel: true })) + '&hideContactImport=1')
+assert.equal(importSecond.status, 200)
+assert.equal(JSON.parse(files.get(profileSettingsPath)).entries.panel, false, 'a repeated import never overwrites already-saved keys')
+assert.equal(JSON.parse(files.get(profileSettingsPath)).hideContact, false, 'hideContactImport is ignored once stored')
+assert.equal(importSecond.body.hideContactStored, true)
+const emptyStored = await boot({ restartId: 'entries-empty-stored' })
+files.set(profileSettingsPath, JSON.stringify({ entries: {} }))
+const emptyStatus = await emptyStored.request('/dsh-desktop-restart/api/status', 'GET', '/dsh-desktop-restart/api/status')
+assert.equal(emptyStatus.body.entriesStored, false, 'an empty entries object still means not-yet-migrated')
+results.push({ case: 'prefs-import-contract-is-strict-and-idempotent', passed: true })
 
 const invalidIdentityId = 'invalid-helper-created-at'
 const invalidIdentity = { ...reusedIdentity, pid: 781, createdAt: 'not-a-date' }
@@ -844,17 +923,17 @@ const cases4a = [
   ['6', 'immediate restart rejects live installation and keeps the request paused', async () => {
     const host = await pausedFixture4a()
     host.setInstalling(true)
-    const refusal = await host.post('choice=now')
+    const refusal = await host.post('choice=now&ask=' + (await host.status()).restartRequest.ask)
     assert.equal(refusal.status, 409)
     assert.equal(refusal.body.blocked, true)
     assert.equal(host.spawnCount(), 0)
     assert.equal((await host.status()).restartRequest.state, 'paused')
     host.setInstalling(false)
-    const accepted = host.post('choice=now')
+    const accepted = host.post('choice=now&ask=' + (await host.status()).restartRequest.ask)
     await settle4a()
     assert.equal((await host.status()).restartRequest.state, 'executing')
     assert.equal(host.spawnCount(), 1)
-    assert.equal((await host.post('cancelWait=1')).body.cancelled, false, 'execution is irrevocable')
+    assert.equal((await host.post('cancelWait=1&request=' + (await host.status()).restartRequest.id)).body.cancelled, false, 'execution is irrevocable')
     await host.advance(500)
     await accepted
   }],
@@ -910,7 +989,7 @@ const cases4a = [
     const results = await Promise.all([host.post('choice=now&ask=' + ask), host.post('choice=now&ask=' + ask), host.post('wait=1')])
     assert.deepEqual(results.map(result => result.status), [202, 409, 409])
     assert.equal(host.spawnCount(), 1)
-    assert.equal((await host.post('cancelWait=1')).body.cancelled, false)
+    assert.equal((await host.post('cancelWait=1&request=' + (await host.status()).restartRequest.id)).body.cancelled, false)
   }],
   ['late-install', 'installation appearing at countdown end pauses safely without executing', async () => {
     const host = await requestFixture4a()
@@ -940,7 +1019,7 @@ const cases4a = [
       assert.equal(status.waiting, null, 'legacy waiting must expire in the same response')
       assert.equal(status.restartRequest.countdownRemainingMs, null)
       assert.equal(host.spawnCount(), 0)
-      assert.equal((await host.post('cancelWait=1')).body.cancelled, false)
+      assert.equal((await host.post('cancelWait=1&request=' + (await host.status()).restartRequest?.id)).body.cancelled, false)
     }
   }],
   // ── 2026-10-26 缺陷 1 回归（普通请求一律 waiting → countdown → executing）──
@@ -1027,14 +1106,14 @@ const cases4a = [
     const bare = await host.post('now=1')
     assert.equal(bare.status, 202, 'R3: bare now is still an accepted waiting request')
     assert.equal(bare.body.restartRequest.state, 'waiting', 'R3: bare now must not jump the queue')
-    await host.post('cancelWait=1')
+    await host.post('cancelWait=1&request=' + bare.body.restartRequest.id)
     // 裸 force=1（客户端 warn 态二击的形状）：同样不得跳过等待/倒计时。
     // 这正是「双击确认 == 立即重启」缺陷的宿主侧入口。
     const warnConfirm = await host.post('force=1')
     assert.equal(warnConfirm.status, 202, 'R3: bare force must be accepted as a normal waiting request')
     assert.equal(warnConfirm.body.restartRequest.state, 'waiting', 'R3: bare force must not execute immediately')
     assert.equal(host.spawnCount(), 0, 'R3: bare force spawns nothing')
-    await host.post('cancelWait=1')
+    await host.post('cancelWait=1&request=' + warnConfirm.body.restartRequest.id)
     // force=1&now=1（显式「仍要重启 / 立即重启」）：跳过 waiting/countdown。
     const immediate = host.post('force=1&now=1')
     await settle4a()
@@ -1060,9 +1139,72 @@ const cases4a = [
     const state = (await host.status()).restartRequest
     assert.equal(state.state, 'waiting', 'R4: unverifiable busy state must stay in waiting')
     assert.equal(host.spawnCount(), 0, 'R4: never executes on unknown evidence')
-    await host.post('cancelWait=1')
+    await host.post('cancelWait=1&request=' + (await host.status()).restartRequest.id)
   }],
 ]
+// ── 2026-11-15 F01/F02/F03（补充审查）回归 ─────────────────────────────
+{
+// F01：A 的取消（迟到投递）不得取消新排程的 B；B 自己的合法取消有效。
+const host = await requestFixture4a()
+host.setBusy(true) // 忙闲等待：请求停在 waiting（countdown=0 的空闲请求会直接执行）
+await host.post('wait=1')
+const staleCancel = 'cancelWait=1&request=' + (await host.status()).restartRequest.id
+await host.post(staleCancel) // 先合法取消 A
+await host.post('wait=1')    // 排入 B
+const bId = (await host.status()).restartRequest.id
+assert.notEqual(bId, /request=([^&]+)/u.exec(staleCancel)[1], 'the new request has a fresh id')
+const late = await host.post(staleCancel)
+assert.equal(late.status, 409, 'a stale cancellation cannot cancel the newer request B')
+assert.equal((await host.status()).restartRequest.id, bId, 'B survives the stale cancellation')
+const okCancel = await host.post('cancelWait=1&request=' + bId)
+assert.equal(okCancel.body.cancelled, true, "B's own cancellation still works")
+}
+console.log('PASS F01: stale cancellation is refused; the newer request survives and its own cancel works')
+{
+// F02：choice=now 必须带 ask；force+now 绑定原请求 ID —— 迟到确认被拒、正确绑定执行。
+const host = await pausedFixture4a()
+assert.equal((await host.post('choice=now')).status, 409, 'choice=now without the ask is refused')
+const host2 = await requestFixture4a()
+host2.setBusy(true) // 忙闲等待：请求停在 waiting（countdown=0 的空闲请求会直接执行）
+await host2.post('wait=1')
+const id = (await host2.status()).restartRequest.id
+const stale = await host2.post('force=1&now=1&request=stale-id')
+assert.equal(stale.status, 409, 'a confirm bound to another request is refused')
+assert.equal((await host2.status()).restartRequest.state, 'waiting', 'the waiting request survives the stale confirm')
+const bound = await host2.post('force=1&now=1&request=' + id)
+await settle4a()
+assert.equal((await host2.status()).restartRequest.state, 'executing', 'the correctly bound confirm executes')
+await bound
+}
+console.log('PASS F02: choice=now needs the ask and force+now binds the original request id')
+{
+// F03：崩溃残留的 recovery 标记（写入者已死）可安全回收；写入者活着 → 拒绝。
+// 直接走锁协议单元路径（真实 fs 语义在 files 覆盖层上）。
+const f03 = await boot({ restartId: 'f03-lock-unit', fakeHelper: true, deadLockPid: 999999 })
+const f03Ns = f03.module.namespace.__test
+const lockPath = String(f03Ns.RESTART_LOCK)
+files.set(lockPath, JSON.stringify({ pid: 999999, at: new Date().toISOString(), token: 'stale' }))
+files.set(lockPath + '.recovery', '999999')
+const reclaimed = f03Ns.acquireRestartLock('f03-token-a')
+assert.equal(reclaimed.ok, true, 'a crash-left recovery marker whose writer is dead is reclaimed and the takeover proceeds')
+assert.equal(files.has(lockPath + '.recovery'), false, 'the recovery marker is cleaned up after the takeover')
+assert.equal(JSON.parse(files.get(lockPath)).token, 'f03-token-a', 'the new owner holds the lock')
+f03Ns.releaseRestartLock('f03-token-a')
+assert.equal(files.has(lockPath), false, 'the new owner releases cleanly')
+// 写入者活着 → 拒绝；两个竞争者只有一个能拿到标记（wx 原子性）。
+files.set(lockPath, JSON.stringify({ pid: 999999, at: new Date().toISOString(), token: 'stale-2' }))
+files.set(lockPath + '.recovery', String(process.pid))
+const refused = f03Ns.acquireRestartLock('f03-token-b')
+assert.equal(refused.ok, false, 'a recovery marker whose writer is alive still refuses')
+assert.equal(refused.status, 409)
+files.delete(lockPath + '.recovery')
+const winner = f03Ns.acquireRestartLock('f03-token-c')
+assert.equal(winner.ok, true, 'the first competitor takes the lock')
+const loser = f03Ns.acquireRestartLock('f03-token-d')
+assert.equal(loser.ok, false, 'the second competitor gets EEXIST')
+f03Ns.releaseRestartLock('f03-token-c')
+}
+console.log('PASS F03: crash-left recovery markers are reclaimed; live writers still refuse')
 let failed4a = 0
 for (const [id, name, test] of cases4a) {
   if (process.env.DSHDR4A_CASE && process.env.DSHDR4A_CASE !== id) continue
@@ -1297,7 +1439,7 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '3') {
 
 if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '5') {
   const host=await requestFixture4a();host.setBusy(true);await host.post('wait=1')
-  const cancelled=await host.post('cancelWait=1')
+  const cancelled=await host.post('cancelWait=1&request=' + (await host.status()).restartRequest.id)
   assert.equal(cancelled.body.cancelled,true)
   assert.equal(cancelled.body.restartRequest.state,'terminal','cancel response still communicates its result')
   const next=await host.status()
@@ -1313,7 +1455,7 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '7') {
   const state=(await host.status()).restartRequest
   assert.equal(typeof state.countdownUntil,'string','4B-7: host provides absolute countdownUntil')
   assert.equal(Date.parse(state.countdownUntil),Date.parse(state.deadlineAt)-1_800_000+5000)
-  await host.post('cancelWait=1');assert.equal((await host.status()).restartRequest.countdownUntil,null)
+  await host.post('cancelWait=1&request=' + (await host.status()).restartRequest.id);assert.equal((await host.status()).restartRequest.countdownUntil,null)
   console.log('PASS 4B-7 countdownUntil is absolute and absent outside countdown')
   results.push({case:'4B-7 absolute countdownUntil',passed:true})
 }
@@ -1583,7 +1725,9 @@ if (failed4a) process.exitCode = 1
   const stale=await boot({restartId:null,fakeHelper:true,deadLockPid:99999})
   const staleApi=stale.module.namespace.__test
   files.set(staleApi.RESTART_LOCK,JSON.stringify({pid:99999,at:'2026-01-01T00:00:00Z',token:'old'}))
-  assert.equal(staleApi.acquireRestartLock('takeover').stale,true)
+  const takeoverResult = staleApi.acquireRestartLock('takeover')
+console.log('DBG-takeover', JSON.stringify(takeoverResult))
+assert.equal(takeoverResult.stale,true)
   assert.equal(JSON.parse(files.get(staleApi.RESTART_LOCK)).token,'takeover')
   staleApi.releaseRestartLock('takeover')
   for(const h of [first,second,stale])for(const dispose of h.disposers)dispose()
