@@ -1,7 +1,7 @@
 {
   "name": "@luoshuizhiwei/dsh-desktop-restart",
-  "version": "0.4.10",
-  "description": "给 DSH 桌面版加一键重启：只结束 Electron 主进程，宿主自己优雅退出、会话照常落盘；有任务在跑时先问你，插件在装时硬拦；重启完告诉你停机多久、新实例起来没有。六个入口可逐个关闭，另带登录数据体检、遗留临时文件预览、隐藏账号菜单反馈项。界面跟随应用语言（中/英）。 One-click restart for DSH Desktop: ends only the Electron main process so the host exits gracefully and sessions flush; asks first when work is running, hard-blocks while plugins install, then reports the downtime and whether the new instance came up. Six independently toggleable entry points, plus a sign-in data health check, leftover temp-file preview and a hide-feedback switch. UI follows the app language (zh/en).",
+  "version": "0.4.11",
+  "description": "给 DSH 桌面版加一键重启：只结束 Electron 主进程，宿主优雅退出、会话照常落盘；有任务在跑先问你，装插件时硬拦；重启完告诉你停机多久。六个入口可关，另带登录体检、临时文件预览、隐藏反馈项。 One-click restart for DSH Desktop: ends only the main process so sessions flush, asks before interrupting, reports the downtime.",
   "keywords": [
     "dsh",
     "dsh-plugin",
