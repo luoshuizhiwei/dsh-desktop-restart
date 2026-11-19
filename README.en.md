@@ -521,7 +521,7 @@ restores them.
 
 ## Testing and acceptance boundaries
 
-- Package version `0.4.11`.
+- Package version `0.4.12`.
 - **Verified on a real machine**: the full restart chain (including downtime measurement and
   receipts), toggles surviving a hard kill, a late receipt no longer being misreported as
   "unknown", pre-kill identity verification, account-menu first-open injection, panel button
