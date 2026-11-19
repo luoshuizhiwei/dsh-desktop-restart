@@ -43,6 +43,11 @@ for(const kind of ['cookie','countdown','warn'])for(const stuck of ['transport',
   const component=kind==='cookie'?h.authCookieComponent:walk(section.tree,n=>n.type?.name===(kind==='countdown'?'CountdownRow':'WarnExpireRow')).type
   const ui=h.render(component);await flush()
   let tree=h.render(component,ui.hook).tree
+  // 2026-11-17：Cookie 详情默认折叠，按钮与开关都在详情里；先展开再找控件。
+  if(kind==='cookie'){
+    const tg=walk(tree,n=>n.type==='input'&&n.props['aria-label']==='Show Cookie details')
+    if(tg&&tg.props.checked!==true){tg.props.onChange({target:{checked:true}});await flush();tree=h.render(component,ui.hook).tree}
+  }
   const control=buttons(tree).find(b=>b.props.onClick)
   assert.equal(control.props.disabled,false);control.props.onClick();await flush()
   h.fireTimer(10000);await flush()
@@ -61,6 +66,9 @@ for(const kind of ['cookie','countdown','warn'])for(const stuck of ['transport',
     return Promise.resolve(reply(200,statusBody('off',{authCookie:{backup:false,warn:true,limitBytes:16384,last:null}})))
   })
   const ui=h.render(h.authCookieComponent);await flush()
+// 2026-11-17：Cookie 详情默认折叠，先展开再找按钮与文本。
+const tg=walk(h.render(h.authCookieComponent,ui.hook).tree,n=>n.type==='input'&&n.props['aria-label']==='Show Cookie details')
+if(tg&&tg.props.checked!==true){tg.props.onChange({target:{checked:true}});await flush()}
   buttons(h.render(h.authCookieComponent,ui.hook).tree).find(b=>b.props.onClick).props.onClick()
   await flush();h.fireTimer(10000);await flush();h.fireTimer(10000);await flush()
   const tree=h.render(h.authCookieComponent,ui.hook).tree

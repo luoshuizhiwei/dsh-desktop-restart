@@ -1320,8 +1320,8 @@ await ok('client bundle：主区面板按同座位（任务看板）的页面版
   sourceTextChecks.match("T040", source, /\.dshdr-panel-status\{[^}]*margin-left:auto/u, '状态词靠右')
   sourceTextChecks.match("T041", source, /function statusOf\(action\)/u, '要有状态词函数')
   // 说明 / 警告 / 结果都是卡片，而不是一行灰字
-  sourceTextChecks.match("T042", source, /\.dshdr-panel-warn\{[^}]*border:1px solid[^}]*border-radius:12px/u, '警告块要卡片化')
-  sourceTextChecks.match("T043", source, /\.dshdr-panel-note\{[^}]*border:1px solid[^}]*border-radius:12px/u, '结果块要卡片化')
+  sourceTextChecks.match("T042", source, /\.dshdr-panel-warn\{[^}]*border:1px solid[^}]*border-radius:(?:12px|var\(--dsw-radius-md,12px\))/u, '警告块要卡片化')
+  sourceTextChecks.match("T043", source, /\.dshdr-panel-note\{[^}]*border:1px solid[^}]*border-radius:(?:12px|var\(--dsw-radius-md,12px\))/u, '结果块要卡片化')
   // 守卫提示单独成块，不再拼进说明里
   sourceTextChecks.match("T044", source, /const guardWarn = action\.guardHint === ""/u, '守卫提示要单独成一块')
 })

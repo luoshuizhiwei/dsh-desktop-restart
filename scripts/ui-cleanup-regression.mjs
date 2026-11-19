@@ -7,7 +7,10 @@ for(const iso of ['2026-10-29T12:37:33.122Z',null,'','invalid-date',undefined]){
   const health={backup:false,warn:true,limitBytes:16384,last:{status:'normal',checkedAt:iso,sample:{estimatedBytes:350,authCount:0,checkedAt:sampleAt}}}
   const h=makeHarness(async()=>reply(200,statusBody('off',{authCookie:health})))
   const mounted=h.render(h.authCookieComponent);await flush()
-  const text=textContent(h.render(h.authCookieComponent,mounted.hook).tree)
+// 2026-11-17：Cookie 详情默认折叠；时间戳在详情里，先展开。
+const toggle=walk(h.render(h.authCookieComponent,mounted.hook).tree,n=>n.type==='input'&&n.props['aria-label']==='Show Cookie details')
+if(toggle&&toggle.props.checked!==true){toggle.props.onChange({target:{checked:true}});await flush()}
+const text=textContent(h.render(h.authCookieComponent,mounted.hook).tree) // 展开后再取文本
   if(iso==='2026-10-29T12:37:33.122Z'){
     const format=value=>new Intl.DateTimeFormat('sv-SE',{dateStyle:'short',timeStyle:'medium',hour12:false}).format(new Date(value))
     assert.ok(text.includes('Last check: '+format(iso)))

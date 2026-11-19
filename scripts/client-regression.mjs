@@ -7,6 +7,22 @@ import { accountMenuDOM } from './fixtures/account-menu-dom.mjs'
 import { source, walk, makeHarness, reply, flush, acceptRestart, buttons, buttonWithText, textContent, statusBody } from './fixtures/client-harness.mjs'
 let passed=0
 
+/** 2026-11-17：Cookie 详情默认折叠（只显示横条）；要看细节的用例先点开开关。 */
+async function expandCookieDetail(h, hook) {
+  const probe = h.render(h.authCookieComponent, hook).tree
+  const toggle = walk(probe, n => n.type === 'input' && n.props['aria-label'] === 'Show Cookie details')
+  if (toggle && toggle.props.checked !== true) { toggle.props.onChange({ target: { checked: true } }); await flush() }
+  return h.render(h.authCookieComponent, hook).tree
+}
+
+/** 2026-11-17：遗留快照区也默认折叠（只显示横条）；要看细节的用例先点开。 */
+async function expandSweepDetail(h, hook) {
+  const probe = h.render(h.sweepComponent, hook).tree
+  const toggle = walk(probe, n => n.type === 'input' && n.props['aria-label'] === 'Show scan details')
+  if (toggle && toggle.props.checked !== true) { toggle.props.onChange({ target: { checked: true } }); await flush() }
+  return h.render(h.sweepComponent, hook).tree
+}
+
 {
   let reads = 0
   const harness = makeHarness(async (_url, options) => {
@@ -102,7 +118,7 @@ console.log(`ok ${passed} - structured install block is localized in English`)
   })
   const instance = harness.render(harness.sweepComponent)
   await flush()
-  let tree = harness.render(harness.sweepComponent, instance.hook).tree
+  let tree = await expandSweepDetail(harness, instance.hook)
   assert.equal(buttonWithText(tree, 'Scan leftover snapshot preview now').props.disabled, false)
   buttonWithText(tree, 'Scan leftover snapshot preview now').props.onClick()
   await flush()
@@ -143,14 +159,14 @@ const build = (sweepDelete) => makeHarness(async (url, options) => {
   const off = build(false)
   const offMount = off.render(off.sweepComponent)
   await flush()
-  let offTree = off.render(off.sweepComponent, offMount.hook).tree
+  let offTree = await expandSweepDetail(off, offMount.hook)
   assert.equal(findClean(offTree), null, 'no clean button while deleting is off')
   assert.match(textContent(offTree), /dsh-workspace-changes-a/u, 'candidate names are listed')
 
   const on = build(true)
   const onMount = on.render(on.sweepComponent)
   await flush()
-  let onTree = on.render(on.sweepComponent, onMount.hook).tree
+  let onTree = await expandSweepDetail(on, onMount.hook)
   const cleanButton = findClean(onTree)
   assert.ok(cleanButton, 'opt-in reveals the clean button')
   const before = calls.filter((c) => c.url.includes('delete=1')).length
@@ -162,7 +178,7 @@ const build = (sweepDelete) => makeHarness(async (url, options) => {
   walk(onTree, (node) => (typeof node.type === 'string' || node.type?.name) && textContent(node).trim() === 'Confirm delete?').props.onClick()
   await flush()
   assert.equal(calls.filter((c) => c.url.includes('delete=1')).length, before + 1, 'second click performs the deletion')
-  const afterTree = on.render(on.sweepComponent, onMount.hook).tree
+  const afterTree = await expandSweepDetail(on, onMount.hook)
   assert.match(textContent(afterTree), /Deleted 2 folder/u, 'result reports what was removed')
   passed += 1
   console.log(`ok ${passed} - sweep delete is opt-in and needs a second confirmation`)
@@ -178,7 +194,7 @@ const build = (sweepDelete) => makeHarness(async (url, options) => {
   })
   const instance = harness.render(harness.sweepComponent)
   await flush()
-  let tree = harness.render(harness.sweepComponent, instance.hook).tree
+  let tree = await expandSweepDetail(harness, instance.hook)
   assert.match(JSON.stringify(tree), /status offline/u)
   buttonWithText(tree, 'Retry read').props.onClick()
   await flush()
@@ -199,7 +215,7 @@ const build = (sweepDelete) => makeHarness(async (url, options) => {
   })
   const instance = harness.render(harness.sweepComponent)
   await flush()
-  let tree = harness.render(harness.sweepComponent, instance.hook).tree
+  let tree = await expandSweepDetail(harness, instance.hook)
   buttonWithText(tree, 'Scan leftover snapshot preview now').props.onClick()
   await flush()
   tree = harness.render(harness.sweepComponent, instance.hook).tree
@@ -224,7 +240,7 @@ const build = (sweepDelete) => makeHarness(async (url, options) => {
   })
   const instance = harness.render(harness.sweepComponent)
   await flush()
-  let tree = harness.render(harness.sweepComponent, instance.hook).tree
+  let tree = await expandSweepDetail(harness, instance.hook)
   const toggle = walk(tree, (node) => node.type === 'input' && node.props['aria-label'] === 'Scan leftover snapshots on start (preview only)')
   assert.ok(toggle)
   assert.equal(toggle.props.checked, false)
@@ -366,7 +382,7 @@ const build = (sweepDelete) => makeHarness(async (url, options) => {
   } } })))
   const instance = harness.render(harness.sweepComponent)
   await flush()
-  const tree = harness.render(harness.sweepComponent, instance.hook).tree
+  const tree = await expandSweepDetail(harness, instance.hook)
   assert.doesNotMatch(textContent(tree), /\[object Object\]/u)
   assert.match(textContent(tree), /EACCES/u)
   assert.match(textContent(tree), /incomplete|部分结果/iu)
@@ -1048,7 +1064,7 @@ if (!process.env.DSHDR4B_CASE || process.env.DSHDR4B_CASE === '3') {
     return new Promise(resolve=>{finish=resolve})
   })
   const mounted=harness.render(harness.sweepComponent);await flush()
-  let tree=harness.render(harness.sweepComponent,mounted.hook).tree
+  let tree = await expandSweepDetail(harness, mounted.hook)
   buttonWithText(tree,'Scan leftover snapshot preview now').props.onClick();await flush()
   tree=harness.render(harness.sweepComponent,mounted.hook).tree
   buttonWithText(tree,'Cancel scan').props.onClick();await flush()
@@ -2232,7 +2248,8 @@ for (const elapsed of [5100, 1000]) {
   const officialItems = dom.menu.querySelectorAll('button[role="menuitem"]').filter(node => node !== button)
   assert.deepEqual(officialItems.map(node => node.getAttribute('data-host-id')), ['settings','contact','signout'])
   console.log('MENU ORDER signed-in: restart -> ' + officialItems.map(node => node.getAttribute('data-host-id')).join(' -> '))
-  assert.match(button.textContent, /Restart desktop app/u)
+  // 2026-11-19：idle 用短名，与官方「Settings」「Sign out」同一风格
+  assert.match(button.textContent, /^Restart app$/u)
   dom.clickTrigger(); await flush(); h.settleMenu()
   assert.equal(dom.injected().length, 1, 'repeated discovery remains idempotent')
   assert.equal(dom.injected()[0],button,'repeated discovery reuses the same node')
@@ -2272,11 +2289,47 @@ for (const elapsed of [5100, 1000]) {
   await flush(); dom.open(); await flush(); h.settleMenu()
   assert.equal(dom.injected().length, 1)
   const unknownButton = dom.injected()[0]
-  assert.match(unknownButton.textContent, /Restart desktop app|重启桌面应用/u, 'menu keeps the neutral action name')
+  assert.match(unknownButton.textContent, /^Restart app$|^重启应用$/u, 'menu keeps the neutral action name')
   assert.doesNotMatch(unknownButton.textContent, /Unknown|结果未知/u, 'menu never shouts unknown')
   h.unmount(mount.hook); h.dispose()
   passed++; console.log(`ok ${passed} - account menu keeps a neutral label when the last result is unknown`)
 }
+
+// 2026-11-19 跨入口同步：任一入口点第一下，其余入口立刻进入确认态（共享 store 的 confirmAt）。
+{
+  const h = makeHarness(async () => reply(200, statusBody()), {})
+  await flush()
+  const panel = h.render(h.panelComponent)
+  const header = h.render(h.headerComponent)
+  await flush()
+  const mainOf = () => buttons(h.render(h.panelComponent, panel.hook).tree).find((b) => b.props["data-variant"] === "primary")
+  const headerText = () => textContent(h.render(h.headerComponent, header.hook).tree)
+  assert.doesNotMatch(headerText(), /Restart now\?/u, "the header starts without an armed confirmation")
+  mainOf().props.onClick()
+  await flush()
+  assert.match(headerText(), /Restart now\?/u, "arming in the panel shows up in the header (shared confirmation)")
+  h.unmount(panel.hook); h.unmount(header.hook); h.dispose()
+}
+passed += 1
+console.log(`ok ${passed} - cross-entry confirmation is shared: arming in the panel shows up in the header`)
+
+// 2026-11-19：折叠后正文被藏起来，摘要必须自己说明异常（读不到状态 / 上次失败）。
+for (const [label, body, expect] of [
+  ["status unreadable", statusBody('off'), /Status unreadable/u],
+  ["last scan failed", statusBody('off', { sweep: { enabled: false, last: { scanned: 0, removed: 0, failed: 1, bytes: 0, candidateCount: 0, candidateBytes: 0, skippedCount: 0, error: { code: 'EACCES' } } } }), /Last scan failed/u],
+]) {
+  const h = makeHarness(async () => reply(200, body))
+  await flush()
+  const mounted = h.render(h.sweepComponent)
+  await flush()
+  const tree = h.render(h.sweepComponent, mounted.hook).tree
+  const summary = walk(tree, (n) => n.props?.className === 'dshdr-health-summary')
+  assert.match(textContent({ type: 'div', props: {}, children: [summary] }), expect, label + ': the collapsed bar must surface the problem')
+  assert.equal(summary.props['data-tone'], label === 'status unreadable' ? 'error' : 'warn', label + ': tone marks severity')
+  h.unmount(mounted.hook); h.dispose()
+}
+passed += 1
+console.log(`ok ${passed} - collapsed sweep bar surfaces unreadable status and failed scans`)
 for (const scenario of ['missing', 'empty', 'ambiguous', 'wrong-launcher', 'nested', 'append-failure', 'observer-failure', 'footer-only', 'no-presentation']) {
   const dom = accountMenuDOM(scenario)
   const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
@@ -2508,6 +2561,15 @@ for (const scenario of ['grouped', 'signed-out']) {
   })
   const mount=h.render(h.authCookieComponent);await flush()
   let tree=h.render(h.authCookieComponent,mount.hook).tree
+  // 2026-11-17：默认只显示横条（开关决定是否展开详情）。
+  assert.doesNotMatch(textContent(tree),/Unavailable/u,'the collapsed bar hides the detail body')
+  assert.match(textContent(tree),/Authentication Cookie health/u)
+  assert.equal(walk(tree,n=>n.type==='input'&&n.props['aria-label']==='Show Cookie details').props.checked,false)
+  walk(tree,n=>n.type==='input'&&n.props['aria-label']==='Show Cookie details').props.onChange({target:{checked:true}})
+  await flush()
+  tree=h.render(h.authCookieComponent,mount.hook).tree
+  assert.equal(walk(tree,n=>n.type==='input'&&n.props['aria-label']==='Show Cookie details').props.checked,true,'the switch opens the detail')
+assert.equal(walk(tree,n=>n.props?.className==='dshdr-health-mini'),null,'the collapsed mini bar hides once the detail opens')
   assert.match(textContent(tree),/Unavailable/u)
   assert.match(textContent(tree),/Cannot read while running/u)
   assert.match(textContent(tree),/16 KiB \(16384 bytes\)/u)
@@ -2527,7 +2589,7 @@ for(const reason of ['database-unavailable','sqlite-unavailable']) {
   const health={clean:false,warn:true,limitBytes:16384,last:{schema:1,status:'unavailable',reason,errorCode:'TEST_BOUNDARY',checkedAt:'2026-10-29T06:00:00Z',sample:null}}
   const h=makeHarness(async()=>reply(200,statusBody('off',{authCookie:health})))
   const mount=h.render(h.authCookieComponent);await flush()
-  const tree=h.render(h.authCookieComponent,mount.hook).tree
+  const tree=await expandCookieDetail(h,mount.hook)
   assert.match(textContent(tree),/Unavailable/u)
   assert.match(textContent(tree),reason==='sqlite-unavailable'?/does not support built-in SQLite/u:/unavailable or still locked/u)
   h.unmount(mount.hook)
@@ -2537,7 +2599,12 @@ for(const reason of ['database-unavailable','sqlite-unavailable']) {
   const health={clean:false,warn:true,limitBytes:16384,last:{schema:1,status:'near',checkedAt:'2026-10-29T06:00:00Z',sample:{estimatedBytes:14028,authCount:60,status:'near',checkedAt:'2026-10-29T06:00:00Z'}}}
   const h=makeHarness(async(_url,options)=>options.method==='POST'?reply(500,{ok:false,error:'fixture settings write rejected'}):reply(200,statusBody('off',{authCookie:health})))
   const mount=h.render(h.authCookieComponent);const panel=h.render(h.panelComponent);await flush()
-  let tree=h.render(h.authCookieComponent,mount.hook).tree
+  // 2026-11-17：折叠态横条下方也有一条 3px 迷你进度条（有样本时），展开后消失。
+  const collapsedBar=walk(h.render(h.authCookieComponent,mount.hook).tree,n=>n.props?.className==='dshdr-health-mini')
+  assert.ok(collapsedBar,'the collapsed bar carries a mini progress bar')
+  assert.equal(collapsedBar.props['data-tone'],'warn','the mini bar carries the near-limit tone')
+  assert.equal(collapsedBar.props.max,16384)
+  let tree=await expandCookieDetail(h,mount.hook)
   assert.match(textContent(tree),/13.70 KiB \(85.6%\)/u)
   assert.match(textContent(tree),/dsh-auth-\* count: 60/u)
   assert.equal(walk(tree,n=>n.type==='progress').props.max,16384)
@@ -2903,10 +2970,16 @@ for(const triggerConnected of [true,false]) {
   assert.equal(walk(section.tree,n=>n.type?.name==='DiagnosticNotices'),null,'settings page carries no diagnostic notices')
   const mounted=h.render(h.authCookieComponent);await flush()
   const tree=h.render(h.authCookieComponent,mounted.hook).tree
-  assert.equal(tree.type,'details')
-  assert.equal(tree.props.open,undefined,'health starts collapsed')
-  assert.ok(walk(tree,n=>n.type==='summary'))
-  assert.ok(walk(tree,n=>n.type==='progress')===null,'missing sample does not invent usage')
+  // 2026-11-17：折叠区改成「横条 + 开关」，默认只显示横条。
+  assert.equal(tree.type,'div')
+  assert.equal(tree.props.className,'dshdr-health-fold')
+  assert.ok(walk(tree,n=>n.props?.className==='dshdr-health-head'),'the bar holds title, badge and switch')
+  const detailToggle=walk(tree,n=>n.type==='input'&&n.props['aria-label']==='Show Cookie details')
+  assert.ok(detailToggle,'the bar carries a detail switch')
+  assert.equal(detailToggle.props.checked,false,'the detail starts collapsed')
+  assert.ok(walk(tree,n=>n.type==='progress')===null,'no sample means no bar at all')
+  const opened=await expandCookieDetail(h,mounted.hook)
+  assert.ok(walk(opened,n=>n.type==='progress')===null,'missing sample does not invent usage')
   h.unmount(mounted.hook);h.dispose()
   passed++;console.log(`ok ${passed} - Cookie health is a collapsed summary under bundled extras`)
 }
@@ -2933,7 +3006,7 @@ for(const triggerConnected of [true,false]) {
   const h=makeHarness(async()=>reply(200,statusBody('off',{authCookie:health})))
   const mounted=h.render(h.authCookieComponent);await flush()
   const tree=h.render(h.authCookieComponent,mounted.hook).tree
-  assert.equal(tree.props.open,true,'over-limit guidance is immediately visible')
+  assert.equal(walk(tree,n=>n.type==='input'&&n.props['aria-label']==='Show Cookie details').props.checked,true,'over-limit forces the detail open')
   const text=textContent(tree)
   assert.match(text,/%APPDATA%/u);assert.match(text,/Network/u);assert.match(text,/Cookies/u)
   assert.match(text,/fully quit DSH/u);assert.match(text,/developer tools/u)
