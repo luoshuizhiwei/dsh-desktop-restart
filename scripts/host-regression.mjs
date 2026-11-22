@@ -1814,3 +1814,33 @@ for(const [value,expected] of [[undefined,false],[false,false],[true,true],['tru
   for(const dispose of h.disposers)dispose()
   console.log('PASS MENU TRACE: off by default; authenticated receiver opt-in; 50-session ring; extra fields discarded')
 }
+
+// 2026-11-20：清空已读诊断只能删已读 —— 未读是用户还没看见的告警，清掉等于藏起来。
+{
+  const { mkdtempSync, writeFileSync, existsSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'dshdr-notice-'))
+  const profileId = 'clear-fixture'
+  const prefix = 'notice-' + profileId + '-'
+  const make = (id, at) => writeFileSync(join(dir, id + '.json'), JSON.stringify({
+    profileId, id, result: 'failed', reason: 'stop-failed', summary: 'fixture ' + id,
+    at, details: { stages: {} },
+  }), 'utf8')
+  const read = prefix + 'aaa-failed'
+  const unread = prefix + 'bbb-failed'
+  make(read, '2026-11-19T00:00:00.000Z')
+  make(unread, '2026-11-19T01:00:00.000Z')
+  writeFileSync(join(dir, read + '.read'), '', 'utf8')
+  const store = createNoticeStore({ dir, profileId, io: (await import('node:fs')).default, send: () => ({ status: 'failed', code: 'notifications-disabled' }) })
+  assert.equal(store.list().length, 2)
+  const removed = store.clearRead()
+  assert.equal(removed, 1, 'only the read entry is cleared')
+  assert.equal(existsSync(join(dir, read + '.json')), false, 'the read record is gone')
+  assert.equal(existsSync(join(dir, read + '.read')), false, 'the read marker is gone')
+  assert.equal(existsSync(join(dir, unread + '.json')), true, 'the unread record is untouched')
+  assert.equal(store.list().length, 1, 'the unread entry is still listed')
+  assert.equal(store.clearRead(), 0, 'a second clear is a no-op')
+  rmSync(dir, { recursive: true, force: true })
+  console.log('PASS NOTICE CLEAR: clears read entries only; unread alerts survive; second call is a no-op')
+}

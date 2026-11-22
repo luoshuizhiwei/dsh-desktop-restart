@@ -351,7 +351,7 @@ const build = (sweepDelete) => makeHarness(async (url, options) => {
   buttonWithText(tree, 'Retry status').props.onClick()
   await flush()
   tree = harness.render(harness.panelComponent, instance.hook).tree
-  assert.match(textContent(tree), /Host and restart client reconnected/u)
+  assert.match(textContent(tree), /Restarted; host and restart client are connected/u)
   assert.deepEqual(harness.timerDelays(), [])
   tree = harness.render(harness.panelComponent, instance.hook).tree
   const restart = buttons(tree).find((button) => button.props['data-variant'] === 'primary')
@@ -432,7 +432,7 @@ async function testTerminalRestart(componentKey, terminal, expected, disabled) {
 }
 
 await testTerminalRestart('panelComponent', { id: 'failed-op', result: 'failed', phase: 'stop', reason: 'stop-failed', helperAlive: false, busy: false }, /stop-failed/u, false)
-await testTerminalRestart('panelComponent', { id: 'ok-op', result: 'ok', phase: 'ready', helperAlive: false, busy: false }, /Host and restart client reconnected/u, false)
+await testTerminalRestart('panelComponent', { id: 'ok-op', result: 'ok', phase: 'ready', helperAlive: false, busy: false }, /Restarted; host and restart client are connected/u, false)
 await testTerminalRestart('panelComponent', { id: 'unknown-op', result: 'unknown', phase: 'launch', reason: 'launch-unknown', helperAlive: true, busy: true }, /result is unknown|结果不确定/u, true)
 await testTerminalRestart('settingsRestartComponent', { id: 'failed-op', result: 'failed', phase: 'stop', reason: 'stop-failed', helperAlive: false, busy: false }, /stop-failed/u, false)
 await testTerminalRestart('sidebarComponent', { id: 'unknown-op', result: 'unknown', phase: 'launch', reason: 'launch-unknown', helperAlive: true, busy: true }, /Unknown result|结果未知/u, true)
@@ -2330,6 +2330,51 @@ for (const [label, body, expect] of [
 }
 passed += 1
 console.log(`ok ${passed} - collapsed sweep bar surfaces unreadable status and failed scans`)
+
+// 2026-11-20：重启成功后「操作成功」与「宿主回执」合成一条，同一件事不再写两遍。
+{
+  const h = makeHarness(async () => reply(200, statusBody('off', {
+    restartOp: { id: 'ok-op', result: 'ok', phase: 'ready', helperAlive: false, busy: false },
+    lastRestart: { hostReadyAt: '2026-11-19T02:59:23.000Z', downtimeMs: 20000 },
+  })))
+  await flush()
+  const mount = h.render(h.panelComponent)
+  await flush()
+  const text = textContent(h.render(h.panelComponent, mount.hook).tree)
+  const hits = text.split('Restarted').length - 1
+  assert.equal(hits, 1, 'the restart outcome is stated once, not twice')
+  assert.match(text, /Down for 20s/u, 'the merged line keeps the downtime')
+  assert.match(text, /Check other plugins and tasks in the UI/u, 'the merged line keeps the reminder')
+  h.unmount(mount.hook); h.dispose()
+}
+passed += 1
+console.log(`ok ${passed} - a successful restart states its outcome once, with downtime and reminder merged`)
+
+// 2026-11-20：已读诊断的折叠标题要带出最近一条结论，不能只给个数字。
+{
+  const notes = { items: [
+    { id: 'n1', unread: false, summary: 'Restart succeeded', details: {} },
+    { id: 'n2', unread: false, summary: 'Older stop failure', details: {} },
+  ] }
+  const h = makeHarness(async () => reply(200, statusBody('off', { notifications: notes })))
+  await flush()
+  const mount = h.render(h.panelComponent)
+  await flush()
+  const tree = h.render(h.panelComponent, mount.hook).tree
+  const latest = walk(tree, (n) => n.props?.className === 'dshdr-notice-latest')
+  assert.ok(latest, 'the collapsed diagnostics summary carries the newest entry')
+  const latestText = textContent({ type: 'div', props: {}, children: [latest] })
+  assert.match(latestText, /Restart succeeded/u)
+  // 2026-11-20：这些是过去的重启记录，必须显式标历史 —— 否则「结果尚未确认」这类
+  // 旧摘要会和上方的本次结论并排，看起来像自相矛盾。
+  assert.match(latestText, /history/u, 'a past entry must be labelled as history')
+  // 2026-11-20：已读记录越积越多，展开区要有一键清空的出口。
+  const clearAction = buttons(tree).find((b) => /Clear read diagnostics|\u6e05\u7a7a\u5df2\u8bfb\u8bca\u65ad/u.test(textContent({ type: 'div', props: {}, children: [b] })))
+  assert.ok(clearAction, 'the read section offers a clear action')
+  h.unmount(mount.hook); h.dispose()
+}
+passed += 1
+console.log(`ok ${passed} - collapsed diagnostics summary shows the newest entry, not just a count`)
 for (const scenario of ['missing', 'empty', 'ambiguous', 'wrong-launcher', 'nested', 'append-failure', 'observer-failure', 'footer-only', 'no-presentation']) {
   const dom = accountMenuDOM(scenario)
   const h = makeHarness(async () => reply(200, statusBody('off')), {dom})
