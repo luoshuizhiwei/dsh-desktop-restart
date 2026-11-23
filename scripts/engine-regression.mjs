@@ -262,7 +262,7 @@ if (captureChildOutput) handoff.captureChildOutput = true
   if (badHandoff) handoff.mainPid=0
   if (throwCore) handoff.mainPid={valueOf(){throw new Error('fixture unexpected core failure')}}
   let coreError=null
-  return helperApi.performRestart(handoff, (line) => notes.push(line)).catch(error=>{if(!throwCore)throw error;coreError=error.message}).then(() => ({ coreError, noticesSent, noticeRecords:[...operationFiles.entries()].filter(([file])=>win32.basename(file).startsWith('notice-') && file.endsWith('.json')).map(([,value])=>JSON.parse(value)), originalOp, rawOp:operationFiles.get(opPath), lockPresent:operationFiles.has(lockPath), cookieHealth:authCookieFailure?JSON.parse(operationFiles.get('C:\\virtual\\health.json')):null, killed, taskkillCalls, notes, launchEnvs, launchCalls, openCalls, closeCalls, processes: [...processes.keys()], listeners: [...listeners], operation: legacyHandoff ? null : (opReadError === 'json' ? null : JSON.parse(operationFiles.get(opPath))), cimReadResult: helperApi.queryApplicationProcesses('app.exe') }))
+  return helperApi.performRestart(handoff, (line) => notes.push(line)).catch(error=>{if(!throwCore)throw error;coreError=error.message}).then(() => ({ coreError, noticesSent, noticeRecords:[...operationFiles.entries()].filter(([file])=>win32.basename(file).startsWith('notice-') && file.endsWith('.json')).map(([,value])=>JSON.parse(value)), originalOp, rawOp:operationFiles.get(opPath), lockPresent:operationFiles.has(lockPath), cookieHealth:authCookieFailure?JSON.parse(operationFiles.get('C:\\virtual\\health.json')):null, killed, taskkillCalls, notes, launchEnvs, launchCalls, openCalls, closeCalls, processes: [...processes.keys()], listeners: [...listeners], operation: legacyHandoff ? null : (opReadError === 'json' ? null : JSON.parse(operationFiles.get(opPath))), cimReads, cimReadResult: helperApi.queryApplicationProcesses('app.exe') }))
 }
 
 // Same image and same executable, different profile: only the old host tree is eligible.
@@ -321,6 +321,11 @@ assert.equal(typeof newHostReady.operation.stages.readyWait, 'number', 'P7: read
 assert.ok(newHostReady.operation.stages.readyWait >= 0)
 assert.equal(typeof newHostReady.operation.stages.launch, 'number', 'P7: launch timing kept')
 assert.equal(typeof newHostReady.operation.stages.ready, 'number', 'P7: closure timing kept')
+// DR-RESTART-PERF-20261122：回执未齐前不再每轮跑进程树查询。
+// 这个场景的回执在启动后 ~2s 落盘，verify/stop 各一次 CIM 是历史基线；
+// 若 readyWait 里还在每轮查表，cimReads 会明显超出 3。
+assert.ok(newHostReady.cimReads <= 4, `the readiness loop does not poll CIM before the receipt exists (got ${newHostReady.cimReads})`)
+console.log('PASS PERF: CIM queries stay bounded before the receipt lands; full verification runs after it does')
 
 const listenerWithoutReceipt=await runHelperScenario({foreignListener:false,startNewHost:true,acknowledgeRecovery:false})
 assert.equal(listenerWithoutReceipt.operation.result,'unknown')

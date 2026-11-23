@@ -25,7 +25,7 @@ async function expandSweepDetail(h, hook) {
 
 {
   let reads = 0
-  const harness = makeHarness(async (_url, options) => {
+  const harness = makeHarness(async (url, options) => {
     if (options.method === 'POST') return reply(200, { ok: true })
     reads += 1
     if (reads === 2) return Promise.reject(new Error('temporary offline'))
@@ -410,12 +410,18 @@ async function testTerminalRestart(componentKey, terminal, expected, disabled) {
   assert.match(visible, expected)
   assert.doesNotMatch(visible, /scheduled|已排程|已安排/iu, 'terminal UI must not retain a scheduled conclusion')
   const buttonsInTree = buttons(tree)
+  // 2026-11-23：悬停提示改成「只说状态」后，title 不再含固定说明短语，
+  // 改用 class 名定位（dshdr-trigger = 标题栏主按钮，dshdr-foot-badge = 侧栏底部）。
+  // 认三种：面板主按钮（data-variant=primary）、标题栏 trigger、侧栏底部 badge。
+  // 不认裸 dshdr-btn —— 设置行里的「保存」也用那个类，会误判成重启按钮。
+  const isRestartButton = (button) => button.props['data-variant'] === 'primary'
+    || /dshdr-trigger|dshdr-foot-badge/u.test(String(button.props.className ?? ''))
   if (componentKey === 'settingsRestartComponent') {
-    const restartish = buttonsInTree.filter((button) => /whole desktop app|整个桌面应用/u.test(String(button.props.title ?? '')))
+    const restartish = buttonsInTree.filter(isRestartButton)
     assert.equal(restartish.length, 0, '设置页不得再提供重启按钮')
     assert.equal(accepted, false, '设置页不得发出重启请求')
   } else {
-  const restart = buttonsInTree.find((button) => /whole desktop app|整个桌面应用/u.test(String(button.props.title ?? '')) && button.props.onClick)
+  const restart = buttonsInTree.find((button) => isRestartButton(button) && button.props.onClick)
   assert.ok(restart)
   assert.equal(restart.props.disabled, disabled)
   assert.doesNotMatch(String(restart.props.title ?? ''), /scheduled|已排程/iu)
@@ -2349,6 +2355,34 @@ console.log(`ok ${passed} - collapsed sweep bar surfaces unreadable status and f
 }
 passed += 1
 console.log(`ok ${passed} - a successful restart states its outcome once, with downtime and reminder merged`)
+
+// DR-RESTART-PERF-20261122：启动时先发轻量回执查询，不依赖全量 /status 的到达顺序。
+{
+  const calls = []
+  let releaseFull = null
+  const fullGate = new Promise((resolve) => { releaseFull = resolve })
+  const h = makeHarness(async (url, options) => {
+    if (options.method === 'POST') {
+      calls.push(url)
+      return reply(200, { ok: true })
+    }
+    calls.push(url)
+    // 全量 /status 被故意吊住：回执通道仍应先走到 clientReady。
+    await fullGate
+    return reply(200, statusBody())
+  }, {
+    recoveryHandler: () => reply(200, { ok: true, recoveryId: 'restart-fixture-1' }),
+  })
+  await flush()
+  h.fireFrame()
+  await flush()
+  assert.ok(calls.some((url) => url.includes('clientReady=restart-fixture-1')), 'the lightweight path posts the receipt without waiting for the full status response')
+  assert.ok(calls.some((url) => url.includes('queryMs=')), 'the receipt carries the measured query latency')
+  releaseFull()
+  h.dispose()
+}
+passed += 1
+console.log(`ok ${passed} - the first client receipt is not blocked by the full status request`)
 
 // 2026-11-20：已读诊断的折叠标题要带出最近一条结论，不能只给个数字。
 {

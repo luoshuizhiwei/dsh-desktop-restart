@@ -83,7 +83,14 @@ function makeHarness(fetchHandler, options = {}) {
     // 测试时钟接缝：只在传了 clock 时暴露，生产没有这个字段
     ...(clock ? { __dshdrNow: () => clock.now } : {}),
   }
-  const fetch = (url, options = {}) => fetchHandler(url, options)
+  // 2026-11-22（DR-RESTART-PERF）：客户端启动时会先发一次 ?recoveryOnly=1 的轻量回执查询。
+  // 默认在这里直接应答并短路，不交给用例的 fetchHandler —— 否则「第 N 次状态请求」这类
+  // 计数会被它提前占用，把一批与回执无关的旧用例全带崩。
+  // 需要专门验证这条通道时，用 options.recoveryHandler 自己接管。
+  const recoveryHandler = options.recoveryHandler ?? ((url, opts) => reply(200, { ok: true, recoveryId: null }))
+  const fetch = (url, options = {}) => String(url).includes('recoveryOnly=1')
+    ? recoveryHandler(url, options)
+    : fetchHandler(url, options)
   vm.runInNewContext((options.source ?? source).replace("const restartStore = createRestartStore();", "const restartStore = createRestartStore(); window.__testRestartStore = restartStore; window.__testUseRestart = useRestart;"), {
     window,
     document,
@@ -201,7 +208,11 @@ async function acceptRestart(harness, component) {
   const instance = harness.render(component)
   await flush()
   let tree = harness.render(component, instance.hook).tree
-  const findRestart = () => buttons(tree).find((button) => (button.props['data-variant'] === 'primary' || /whole desktop app|整个桌面应用/u.test(String(button.props.title ?? ''))) && button.props.onClick)
+  // 2026-11-23：悬停提示改成「只说状态」后不再含固定说明短语，改用类名/变体定位。
+  const findRestart = () => buttons(tree).find((button) => (
+    button.props['data-variant'] === 'primary'
+    || /dshdr-foot-badge|dshdr-trigger/u.test(String(button.props.className ?? ''))
+  ) && button.props.onClick)
   let button = findRestart()
   assert.ok(button, 'restart button exists')
   assert.equal(button.props.disabled, false, 'old terminal state allows a new request')
