@@ -383,6 +383,11 @@ The UI uses **official primitives**, not lookalikes:
 - Colour semantics use official tokens: danger red for confirmation and warning, a secondary
   warning tone for waiting/countdown, error colour for failure; with reduced motion enabled
   it does not spin.
+- **The confirmation state is shared across entries**: the first click in any one of them turns
+  the header, the sidebar footer and the panel into the confirming state at the same time; a
+  second click in any of them executes, and after 5 seconds they all revert together.
+- The panel states two facts up front: **task check** (running / none running) and
+  **next idle countdown** (0 means no waiting).
 - Official components are declared in `dsh.client.inject` so the loader registers them
   before this plugin runs; if upstream renames or moves a package and the require fails, it
   falls back to its own styles copied **verbatim** from official values.
@@ -519,9 +524,13 @@ unread diagnostics as read (the marker carries `auto` and the closing restart id
 them into the read section; the records themselves are kept, and deleting the read marker
 restores them.
 
+**"Clear read diagnostics"** sits at the right of the read section header. It removes read
+records only — unread ones are never touched, because an unread record is an alert you have
+not seen yet, and clearing it would be hiding it.
+
 ## Testing and acceptance boundaries
 
-- Package version `0.4.12`.
+- Package version `0.4.13`.
 - **Verified on a real machine**: the full restart chain (including downtime measurement and
   receipts), toggles surviving a hard kill, a late receipt no longer being misreported as
   "unknown", pre-kill identity verification, account-menu first-open injection, panel button

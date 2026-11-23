@@ -1,6 +1,6 @@
 {
   "name": "@luoshuizhiwei/dsh-desktop-restart",
-  "version": "0.4.12",
+  "version": "0.4.13",
   "description": "给 DSH 桌面版加一键重启：只结束 Electron 主进程，宿主优雅退出、会话照常落盘；有任务在跑先问你，装插件时硬拦；重启完告诉你停机多久。六个入口可关，另带登录体检、临时文件预览、隐藏反馈项。 One-click restart for DSH Desktop: ends only the main process so sessions flush, asks before interrupting, reports the downtime.",
   "keywords": [
     "dsh",
