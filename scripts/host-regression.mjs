@@ -1681,6 +1681,24 @@ if (!process.env.DSHDR4C_CASE || process.env.DSHDR4C_CASE === 'C') {
   results.push({case:'deep-review: operation retention preserves unknown/pending/unread evidence',passed:true})
 }
 {
+  // 2026-11-24：自动续跑在 0.4.5 已整体移除，代码里不再读 resume-*.json。
+  // 它们是纯孤儿，pruneState 必须清掉，别让它们一直躺在状态目录里。
+  const host=await boot({restartId:null})
+  const keep=stateDir+'\\resume-'+'a'.repeat(40)+'.json'
+  const keep2=stateDir+'\\resume-'+'b'.repeat(64)+'.json'
+  files.set(keep,JSON.stringify({restartId:'old',profileId:'p',phase:'done'}))
+  files.set(keep2,JSON.stringify({restartId:'old2',profileId:'p',phase:'done'}))
+  // 名字不像 resume 的不该被动
+  const untouched=stateDir+'\\resume-note.txt'
+  files.set(untouched,'x')
+  host.module.namespace.__test.pruneState(stateDir)
+  assert.ok(!files.has(keep),'resume orphan (40 hex) is cleaned')
+  assert.ok(!files.has(keep2),'resume orphan (64 hex) is cleaned')
+  assert.ok(files.has(untouched),'non-matching names are left alone')
+  for(const dispose of host.disposers)dispose()
+  results.push({case:'2026-11-24: orphaned resume-*.json files from the removed auto-resume feature are cleaned',passed:true})
+}
+{
   const host=await boot({restartId:null})
   const status=(await host.request('/dsh-desktop-restart/api/status','GET','/dsh-desktop-restart/api/status')).body
   assert.equal(status.requestExpiry,true);assert.ok(Number.isFinite(status.serverNow))

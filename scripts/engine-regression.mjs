@@ -17,7 +17,7 @@ function makeProcess(pid, parentPid, path, createdAt, commandLine = 'app.exe') {
   return { pid, parentPid, path, createdAt: new Date(createdAt).toISOString(), commandLine }
 }
 
-function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failLaunchWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false, newHostListener = true, incompleteNewHostRow = false, windowHandle = null, windowForeground = false, relaunchGoneAfterVerify = false, relaunchLogPath = '', relaunchSpawnThrows = false, relaunchAttempts = 1, captureChildOutput = false, taskkillFails = false, reuseMainAtKill = false, killReadIncomplete = false, killTableEmpty = false, receiptDuringProbe = false, probeClockAdvanceMs = 0, probeKillErrors = null }) {
+function runHelperScenario({ foreignPath = targetExe, foreignListener = true, startNewHost = false, handoffPort = 18000, failOperationWrite = false, failLaunchWrite = false, failIdentityWrite = false, incompleteCim = false, legacyHandoff = false, notifications = false, authCookieFailure = false, acknowledgeRecovery = true, keepOldHost = false, disappearBeforeKill = false, opReadError = null, missingOp = false, finalWriteFailure = false, withLock = false, throwCore = false, badHandoff = false, privateExe = false, newHostListener = true, incompleteNewHostRow = false, windowHandle = null, windowForeground = false, relaunchGoneAfterVerify = false, relaunchLogPath = '', relaunchSpawnThrows = false, relaunchAttempts = 1, captureChildOutput = false, taskkillFails = false, reuseMainAtKill = false, killReadIncomplete = false, killTableEmpty = false, receiptDuringProbe = false, probeClockAdvanceMs = 0, probeKillErrors = null, systemProxy = null }) {
   let clock = Date.now()
   const main = makeProcess(100, 1, targetExe, clock - 20_000, '"C:\\DSH\\app.exe" --user-data-dir=C:\\profile-A')
   const host = makeProcess(101, 100, targetExe, clock - 15_000, '"C:\\DSH\\app.exe" --expose-internals')
@@ -54,6 +54,15 @@ const taskkillCalls = []
   }
   const childProcess = {
     execFileSync(command, args) {
+      // 2026-11-24：代理策略要读系统代理开关。默认（systemProxy === null）模拟
+      // 「读不出来」——生产上会原样保留环境变量，与既有用例的期望一致。
+      if (command === 'reg') {
+        if (systemProxy === null) throw new Error('fixture: registry unreadable')
+        const value = args[args.indexOf('/v') + 1]
+        if (value === 'ProxyEnable') return '    ProxyEnable    REG_DWORD    0x' + (systemProxy.enabled ? '1' : '0')
+        if (value === 'ProxyServer') return '    ProxyServer    REG_SZ    ' + String(systemProxy.server ?? '')
+        throw new Error('fixture: unknown registry value')
+      }
       if (command === 'netstat') {
         const rows = [...listeners].map(([port, pid]) => ` TCP 127.0.0.1:${port} 0.0.0.0:0 LISTENING ${pid}`)
         return rows.length === 0 ? 'Active Connections' : rows.join('\n')
@@ -144,7 +153,9 @@ const taskkillCalls = []
     pid: 102,
     ppid: 101,
     argv: [],
-    env: { ELECTRON_RUN_AS_NODE: '1', DSH_DESKTOP_RESTART_ID: 'old', ...(privateExe ? {DSH_DESKTOP_RESTART_EXE:targetExe} : {}) },
+    // 2026-11-24：带上代理残留 —— 真机形态是「关掉代理软件后，旧宿主环境里
+    // HTTP_PROXY 仍指向已失效的端口」。没有这个变量，代理清理逻辑就无事可做。
+    env: { ELECTRON_RUN_AS_NODE: '1', DSH_DESKTOP_RESTART_ID: 'old', HTTP_PROXY: 'http://127.0.0.1:7890', HTTPS_PROXY: 'http://127.0.0.1:7890', ...(privateExe ? {DSH_DESKTOP_RESTART_EXE:targetExe} : {}) },
     kill(pid) {
       // 2026-11-15 A2：按 PID 注入探活错误码（EPERM/EACCES = 权限拒绝，非 ESRCH）。
       if (probeKillErrors !== null && probeKillErrors[Number(pid)] !== undefined) { const error = new Error('probe denied'); error.code = probeKillErrors[Number(pid)]; throw error }
@@ -312,6 +323,40 @@ assert.equal(probeSilent.operation.reason, 'ready-unconfirmed')
 assert.ok(probeSilent.operation.stages.ready >= 1500, 'the silent probe is still measured inside ready')
 
 // Both verified transport and matching host/client receipts are required.
+// ── 2026-11-24：代理环境变量按「当前系统代理状态」修正，而不是原样继承 ──
+// 真机场景：关掉 FlClash 后重启，旧环境里的 HTTP_PROXY 还指向已失效的端口。
+
+// ① 系统代理关着 + 旧环境里有残留 → 必须清掉
+const proxyOff = await runHelperScenario({
+  foreignPath: targetExe, foreignListener: false, startNewHost: true,
+  systemProxy: { enabled: false, server: null },
+})
+const envOff = proxyOff.launchEnvs[0]
+assert.equal(envOff.HTTP_PROXY, undefined, 'proxy off: inherited HTTP_PROXY must be cleared')
+assert.equal(envOff.HTTPS_PROXY, undefined, 'proxy off: inherited HTTPS_PROXY must be cleared')
+assert.ok(proxyOff.notes.some(l => l.includes('system proxy is off')), 'proxy off: logs what it cleared')
+
+// ② 系统代理开着 → 用系统值覆盖（不看旧环境）
+const proxyOn = await runHelperScenario({
+  foreignPath: targetExe, foreignListener: false, startNewHost: true,
+  systemProxy: { enabled: true, server: '127.0.0.1:9999' },
+})
+const envOn = proxyOn.launchEnvs[0]
+assert.equal(envOn.HTTP_PROXY, 'http://127.0.0.1:9999', 'proxy on: HTTP_PROXY comes from the system setting')
+assert.equal(envOn.HTTPS_PROXY, 'http://127.0.0.1:9999', 'proxy on: HTTPS_PROXY comes from the system setting')
+assert.ok(proxyOn.notes.some(l => l.includes('system proxy is on')), 'proxy on: logs the source')
+assert.ok(!proxyOn.notes.some(l => l.includes('9999')), 'proxy on: the value never reaches the log')
+
+// ③ 读不出系统代理（非 Windows / 策略锁住）→ 原样保留，不擅自删
+const proxyUnknown = await runHelperScenario({
+  foreignPath: targetExe, foreignListener: false, startNewHost: true,
+  systemProxy: null,
+})
+assert.equal(proxyUnknown.launchEnvs[0].HTTP_PROXY, 'http://127.0.0.1:7890', 'proxy unknown: environment is left untouched')
+assert.ok(!proxyUnknown.notes.some(l => l.includes('system proxy')), 'proxy unknown: no claim is made')
+
+console.log('PASS PROXY: off clears inherited values; on follows the system setting; unreadable leaves them alone')
+
 const newHostReady = await runHelperScenario({ foreignPath: targetExe, foreignListener: false, startNewHost: true })
 assert(newHostReady.notes.some((line) => line.includes('acknowledged recovery on port 19001')), 'nonce-bound host and client acknowledge the verified transport')
 assert.equal(newHostReady.launchEnvs[0].DSH_DESKTOP_RESTART_ID, 'restart-test-123', 'handoff nonce reaches the new host environment')
