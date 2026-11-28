@@ -504,7 +504,20 @@ decide execution**.
 | No browser session credential | `401` |
 
 When the platform auth service is unavailable, write routes return `503` rather than
-allowing through. Settings writes likewise require same-origin POST and accept exactly one
+allowing through.
+
+That gate follows a renamed DSH API, so both names are accepted, newest first:
+`connection.requestRejection(request) -> 401 | 403 | undefined` on 0.2.1–0.2.2, and
+`connection.admit(request) -> { peer } | { rejection: 401 | 403 | 503 }` from 0.2.3 onward,
+which removed the old name. An implementation that only knows the old name turns every write
+route into `503` on 0.2.3 — the panel then says the composition lacks platform auth and the
+restart button greys out. `admit`'s 401 / 403 are passed through unchanged; `503` is reported
+as “platform auth temporarily unavailable” (retryable) and kept apart from “this composition
+has no such service” (a configuration problem). A return value that is neither `{ peer }` nor
+a known `rejection` is **refused**: `admit` is the only credential gate on the write routes,
+so an unrecognised shape must not count as a pass.
+
+Settings writes likewise require same-origin POST and accept exactly one
 key per request: unknown entries, `command`, multiple keys, duplicate keys and malformed
 JSON all return `400`.
 

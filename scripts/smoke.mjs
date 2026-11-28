@@ -726,7 +726,7 @@ await ok('平台门：ctx.get 异常保留诊断，由敏感写路由拒绝', as
   assert.match(String(fence.error), /boom/u, '要把原因记下来，便于诊断')
 })
 
-await ok('平台门：connection 没有 requestRejection 时按「不可用」处理', async () => {
+await ok('平台门：connection 两代准入接口都没有时按「不可用」处理', async () => {
   const fence = __test.platformFence({
     get: (name) => (name === 'connection' ? {} : undefined),
   }, makeReq('POST'))
@@ -751,6 +751,120 @@ await ok('平台门：requestRejection 异常与鉴权拒绝分别记录', async
   assert.equal(fence.available, true)
   assert.equal(fence.verdict, null, '异常由 error 字段交给写路由处理')
   assert.match(String(fence.error), /nope/u)
+})
+
+await ok('平台门：0.2.3 的 admit 接口原样透传 401 / 403，{ peer } 放行', async () => {
+  const build = (admission) => ({
+    get: (name) => (name === 'connection' ? { admit: () => admission } : undefined),
+  })
+  assert.deepEqual(__test.platformFence(build({ rejection: 401 }), makeReq('POST')), { available: true, verdict: 401, error: null })
+  assert.deepEqual(__test.platformFence(build({ rejection: 403 }), makeReq('POST')), { available: true, verdict: 403, error: null })
+  assert.deepEqual(__test.platformFence(build({ peer: {} }), makeReq('POST')), { available: true, verdict: null, error: null })
+})
+
+await ok('平台门：admit 回 503 记为「暂时不可用」，不是「组合缺服务」', async () => {
+  const fence = __test.platformFence({
+    get: (name) => (name === 'connection' ? { admit: () => ({ rejection: 503 }) } : undefined),
+  }, makeReq('POST'))
+  assert.equal(fence.available, true, '服务在，只是校验器这次失败 —— 两者修法不同')
+  assert.equal(fence.verdict, null)
+  assert.match(String(fence.error), /暂时不可用/u)
+})
+
+await ok('平台门：admit 收到绝对 URL 与连接状态，而不是裸路径', async () => {
+  let seen
+  const ctxAdmit = {
+    get: (name) => (name === 'connection'
+      ? { admit: (request) => { seen = request; return { peer: {} } } }
+      : undefined),
+  }
+  __test.platformFence(ctxAdmit, makeReq('POST', { url: '/dsh-desktop-restart/api/restart?force=1' }))
+  assert.equal(seen.url, 'http://127.0.0.1:19387/dsh-desktop-restart/api/restart?force=1')
+  assert.equal(seen.method, 'POST')
+  assert.equal(seen.headers.host, '127.0.0.1:19387')
+  assert.deepEqual(seen.socket, { destroyed: false })
+})
+
+await ok('平台门：admit 抛异常或返回 Promise 时都不放行', async () => {
+  const ctxThrows = {
+    get: (name) => (name === 'connection' ? { admit: () => { throw new Error('boom') } } : undefined),
+  }
+  const thrown = __test.platformFence(ctxThrows, makeReq('POST'))
+  assert.equal(thrown.available, true)
+  assert.equal(thrown.verdict, null, '异常由 error 字段交给写路由处理')
+  assert.match(String(thrown.error), /boom/u)
+
+  const ctxAsync = {
+    get: (name) => (name === 'connection' ? { admit: async () => ({ peer: {} }) } : undefined),
+  }
+  const pending = __test.platformFence(ctxAsync, makeReq('POST'))
+  assert.equal(pending.available, true)
+  assert.equal(pending.verdict, null, '异步结果判不了就不许放行')
+  assert.match(String(pending.error), /Promise/u)
+})
+
+await ok('平台门：两代接口都在时 admit 优先，旧接口不再被调用', async () => {
+  let legacy = 0
+  const connection = {
+    admit: () => ({ peer: {} }),
+    requestRejection: () => {
+      legacy += 1
+      return 403
+    },
+  }
+  const fence = __test.platformFence({ get: () => connection }, makeReq('POST'))
+  assert.deepEqual(fence, { available: true, verdict: null, error: null })
+  assert.equal(legacy, 0, '0.2.2-rc.2 过渡版两个都有，必须先看新接口')
+})
+
+await ok('平台门：admit 回未识别形状时拒绝执行，而不是静默放行', async () => {
+  for (const admission of [undefined, null, {}, { rejection: 500 }, { peer: null }, true]) {
+    const fence = __test.platformFence({
+      get: (name) => (name === 'connection' ? { admit: () => admission } : undefined),
+    }, makeReq('POST'))
+    const label = JSON.stringify(admission) ?? 'undefined'
+    assert.equal(fence.available, true, `${label} 仍应报告服务在（修法不是改配置）`)
+    assert.equal(fence.verdict, null)
+    assert.match(String(fence.error), /未识别/u, `${label} 不能悄悄放行 —— admit 是写路由唯一的凭据门`)
+  }
+})
+
+await ok('平台门：请求事实在缺 host / host 为数组 / url 已绝对时都不崩', async () => {
+  const capture = () => {
+    const box = {}
+    const ctx = {
+      get: (name) => (name === 'connection'
+        ? {
+          admit: (request) => {
+            box.request = request
+            return { peer: {} }
+          },
+        }
+        : undefined),
+    }
+    return { ctx, box }
+  }
+
+  const noHost = capture()
+  const reqNoHost = makeReq('POST')
+  delete reqNoHost.headers.host
+  __test.platformFence(noHost.ctx, reqNoHost)
+  assert.equal(noHost.box.request.url, '/dsh-desktop-restart/api/restart', 'Host 缺失就保留相对地址，别拼出 http://undefined')
+  assert.equal(noHost.box.request.headers.host, undefined)
+
+  const arrayHost = capture()
+  __test.platformFence(arrayHost.ctx, makeReq('POST', { headers: { host: ['127.0.0.1:19387'] } }))
+  assert.equal(arrayHost.box.request.url, 'http://127.0.0.1:19387/dsh-desktop-restart/api/restart', '数组取首个值')
+
+  const absolute = capture()
+  __test.platformFence(absolute.ctx, makeReq('POST', { url: 'https://127.0.0.1:19387/dsh-desktop-restart/api/restart' }))
+  assert.equal(absolute.box.request.url, 'https://127.0.0.1:19387/dsh-desktop-restart/api/restart', '已是绝对地址就原样透传')
+
+  const noSocket = capture()
+  const reqNoSocket = makeReq('POST')
+  delete reqNoSocket.socket
+  __test.platformFence(noSocket.ctx, reqNoSocket)
+  assert.equal('socket' in noSocket.box.request, false, 'socket 缺失就整个键省略，别塞 undefined 进去')
 })
 
 await ok('平台门：401 与 403 给出不同的修法说明', async () => {
@@ -799,6 +913,35 @@ await ok('写路由：requestRejection 抛异常时返回503，不执行敏感�
   assert.equal(res.statusCode, 503)
   assert.equal(JSON.parse(res.body).ok, false)
   assert.match(JSON.parse(res.body).error, /鉴权/u)
+})
+
+await ok('写路由：0.2.3 的组合（只有 admit）不再被判「缺少平台鉴权服务」', async () => {
+  const routes = ctxWithConnection({ admit: () => ({ peer: {} }) })
+  const res = makeRes()
+  await routes.get('/dsh-desktop-restart/api/restart').handler(makeReq('POST'), res)
+  assert.equal(res.statusCode, 409, '放行后应当走到「不是桌面版」，而不是 503')
+  assert.match(JSON.parse(res.body).error, /桌面版/u)
+
+  const denied = ctxWithConnection({ admit: () => ({ rejection: 401 }) })
+  const unauthorized = makeRes()
+  await denied.get('/dsh-desktop-restart/api/restart').handler(makeReq('POST'), unauthorized)
+  assert.equal(unauthorized.statusCode, 401)
+  assert.match(JSON.parse(unauthorized.body).error, /会话凭据/u)
+})
+
+await ok('状态路由：admit 组合下报 available:true、verdict 原样', async () => {
+  const open = ctxWithConnection({ admit: () => ({ peer: {} }) })
+  const res = makeRes()
+  await open.get('/dsh-desktop-restart/api/status').handler(makeReq('GET'), res)
+  assert.equal(res.statusCode, 200)
+  assert.equal(JSON.parse(res.body).platformAuth.available, true)
+  assert.equal(JSON.parse(res.body).platformAuth.verdict, null)
+
+  const denied = ctxWithConnection({ admit: () => ({ rejection: 403 }) })
+  const forbidden = makeRes()
+  await denied.get('/dsh-desktop-restart/api/status').handler(makeReq('GET'), forbidden)
+  assert.equal(forbidden.statusCode, 200, '状态路由只诊断不拦')
+  assert.equal(JSON.parse(forbidden.body).platformAuth.verdict, 403)
 })
 
 await ok('状态路由：只诊断不拦 —— 鉴权失败也回 200 并把判定说出来', async () => {
